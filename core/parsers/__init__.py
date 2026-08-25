@@ -1,4 +1,5 @@
 from .acfun import AcfunParser
+from .allcpp import AllcppParser
 from .base import BaseParser
 from .bilibili import BilibiliParser
 from .douyin import DouyinParser
@@ -21,6 +22,7 @@ from .pixiv import PixivParser
 __all__ = [
     "BaseParser",
     "AcfunParser",
+    "AllcppParser",
     "BilibiliParser",
     "DouyinParser",
     "InstagramParser",

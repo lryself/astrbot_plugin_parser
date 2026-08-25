@@ -672,6 +672,27 @@
                         "default": 0
                     }
                 }
+            },
+            "allcpp": {
+                "name": "CPP无差别同人站解析器",
+                "items": {
+                    "enable": {
+                        "description": "启用",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "use_proxy": {
+                        "description": "使用代理",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "cookies": {
+                        "description": "Cookies",
+                        "hint": "选填，登录后可解析展品图集（试阅）",
+                        "type": "text",
+                        "default": ""
+                    }
+                }
             }
         }
     }

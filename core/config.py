@@ -174,6 +174,7 @@ class ParserItem(ConfigNode):
 
 class ParserConfig(ConfigNodeContainer):
     acfun: ParserItem
+    allcpp: ParserItem
     bilibili: ParserItem
     douyin: ParserItem
     instagram: ParserItem
