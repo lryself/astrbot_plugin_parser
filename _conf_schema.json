@@ -691,6 +691,18 @@
                         "hint": "选填，登录后可解析展品图集（试阅）",
                         "type": "text",
                         "default": ""
+                    },
+                    "show_work_content": {
+                        "description": "显示图文正文",
+                        "hint": "文字类图文是否显示正文内容。关闭后文字类图文不展示正文。",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "text_max_length": {
+                        "description": "文字类图文消息最大字数",
+                        "hint": "仅文字类图文生效：解析出的文本超过该字数会被截断。图片类图文不限制。0 或不填按默认 100 处理。",
+                        "type": "int",
+                        "default": 100
                     }
                 }
             }

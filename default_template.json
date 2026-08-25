@@ -43,6 +43,8 @@
     "__template_key": "allcpp",
     "enable": true,
     "use_proxy": false,
-    "cookies": ""
+    "cookies": "",
+    "show_work_content": false,
+    "text_max_length": 100
   }
 ]

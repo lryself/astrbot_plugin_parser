@@ -119,7 +119,15 @@ class AllcppParser(BaseParser):
             self.create_image_contents(image_urls) if image_urls else []
         )
 
-        text = self._build_work_text(info, title)
+        show_work_content = bool(getattr(self.mycfg, "show_work_content", False))
+        max_length = int(getattr(self.mycfg, "text_max_length", 100) or 100)
+
+        text = self._build_work_text(
+            info,
+            title,
+            show_work_content=show_work_content,
+            max_length=max_length,
+        )
         contents: list[MediaContent] = []
         if text:
             contents.append(TextContent(text))
@@ -361,7 +369,13 @@ class AllcppParser(BaseParser):
         return "\n".join(parts) if parts else None
 
     @staticmethod
-    def _build_work_text(info: dict[str, Any], title: str) -> str | None:
+    def _build_work_text(
+        info: dict[str, Any],
+        title: str,
+        *,
+        show_work_content: bool = False,
+        max_length: int = 100,
+    ) -> str | None:
         parts: list[str] = []
         if title:
             parts.append(title)
@@ -377,9 +391,21 @@ class AllcppParser(BaseParser):
             parts.append(f"热度：{info['hot']}")
         if info.get("foreword"):
             parts.append(info["foreword"])
-        if info.get("content"):
+        # 正文：图片类始终展示；文字类受「显示正文」配置控制
+        if info.get("content") and (
+            info.get("type_label") != "文字" or show_work_content
+        ):
             parts.append(info["content"])
-        return "\n".join(parts) if parts else None
+        text = "\n".join(parts) if parts else None
+        # 仅文字类图文限制字数，图片类不截断
+        if (
+            text
+            and info.get("type_label") == "文字"
+            and max_length > 0
+            and len(text) > max_length
+        ):
+            text = text[: max_length - 1] + "…"
+        return text
 
     @staticmethod
     def _collect_images(cover: str | None, gallery: list[str]) -> list[str]:
@@ -431,9 +457,10 @@ class AllcppParser(BaseParser):
 
     @staticmethod
     def _clean_detail(text: str) -> str:
-        """清理展品详情文字：去 <img>、<br> 换行、去空白行"""
+        """清理 HTML 文字：去标签、<br>/</p> 换行、去空白行"""
         text = unescape(text or "")
-        text = sub(r"<img[^>]*>", "", text)
-        text = text.replace("<br>", "\n").replace("<br/>", "\n")
+        text = sub(r"<br\s*/?>", "\n", text)
+        text = sub(r"</p>", "\n", text)
+        text = sub(r"<[^>]+>", "", text)
         lines = [line.strip() for line in text.split("\n")]
         return "\n".join(line for line in lines if line)
