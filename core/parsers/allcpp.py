@@ -1,5 +1,6 @@
 """CPP 无差别同人站（allcpp.cn）展品解析器"""
 
+import json
 from html import unescape
 from re import DOTALL, Match, findall, search, sub
 from typing import Any, ClassVar
@@ -10,18 +11,21 @@ from ..config import PluginConfig
 from ..cookie import CookieJar
 from ..data import MediaContent, Platform, SendGroup, TextContent
 from ..download import Downloader
-from .base import BaseParser, handle
+from .base import BaseParser, ParseException, handle
 
 # 图片 CDN，与页面 `getLookWebPicUrl()` 对应
 PIC_CDN = "https://imagecdn3.allcpp.cn"
 
 
 class AllcppParser(BaseParser):
-    """allcpp.cn（无差别同人站）展品解析器
+    """allcpp.cn（无差别同人站）解析器
 
     展品详情页（/d/<id>.do）会服务端渲染标题、封面、标签、作者等信息；
     图集（试阅）内容走 ``allcpp/doujinshi/contribute/getList.do`` 接口，
     该接口需要登录，未配置 Cookie 时退化为仅返回封面。
+
+    图文（后花园文章）详情页（/w/<id>.do）内容由前端通过
+    ``works.allcpp.cn/rest/works/<id>`` 接口异步加载，这里直接请求该接口。
     """
 
     platform: ClassVar[Platform] = Platform(
@@ -95,6 +99,52 @@ class AllcppParser(BaseParser):
             url=page_url,
         )
 
+    # https://www.allcpp.cn/w/<id>.do 图文（后花园文章）详情页
+    @handle("allcpp.cn/w/", r"allcpp\.cn/w/(?P<wid>\d+)")
+    async def _parse_work(self, searched: Match[str]):
+        wid = searched.group("wid")
+        page_url = f"https://www.allcpp.cn/w/{wid}.do"
+
+        info = self._parse_work_data(await self._fetch_work(wid))
+
+        title = info["title"] or f"图文 {wid}"
+        author = (
+            self.create_author(info["author_name"], avatar_url=info["author_avatar"])
+            if info["author_name"]
+            else None
+        )
+
+        image_urls = self._collect_images(None, info["pics"])
+        image_contents: list[MediaContent] = (
+            self.create_image_contents(image_urls) if image_urls else []
+        )
+
+        text = self._build_work_text(info, title)
+        contents: list[MediaContent] = []
+        if text:
+            contents.append(TextContent(text))
+        contents.extend(image_contents)
+
+        send_groups: list[SendGroup] = []
+        if len(contents) >= self.cfg.forward_threshold:
+            send_groups.append(SendGroup(contents=contents))
+        else:
+            if text:
+                send_groups.append(
+                    SendGroup(contents=[TextContent(text)], force_merge=False)
+                )
+            for img in image_contents:
+                send_groups.append(SendGroup(contents=[img], force_merge=False))
+
+        return self.result(
+            title=title,
+            text=text,
+            author=author,
+            contents=contents,
+            send_groups=send_groups,
+            url=page_url,
+        )
+
     async def _fetch_page(self, url: str) -> str:
         """拉取展品详情页 HTML"""
         async with self.session.get(url, headers=self.headers) as resp:
@@ -116,6 +166,21 @@ class AllcppParser(BaseParser):
         except (ClientError, ValueError):
             return []
         return data if isinstance(data, list) else []
+
+    async def _fetch_work(self, wid: str) -> dict[str, Any]:
+        """拉取图文（后花园文章）详情，接口在 works.allcpp.cn 子域"""
+        url = f"https://works.allcpp.cn/rest/works/{wid}"
+        try:
+            async with self.session.get(url, headers=self.headers) as resp:
+                if resp.status >= 400:
+                    raise ClientError(f"HTTP {resp.status} {resp.reason}")
+                text = await resp.text()
+                data = json.loads(text) if text.strip() else None
+        except (ClientError, ValueError):
+            raise ParseException(f"图文 {wid} 不存在或已删除")
+        if not isinstance(data, dict) or not data.get("id"):
+            raise ParseException(f"图文 {wid} 不存在或已删除")
+        return data
 
     def _parse_page(self, html_text: str) -> dict[str, Any]:
         """从详情页 HTML 提取公开信息"""
@@ -184,6 +249,74 @@ class AllcppParser(BaseParser):
 
         return info
 
+    @staticmethod
+    def _parse_work_data(work: dict[str, Any]) -> dict[str, Any]:
+        """从图文接口数据中提取展示信息"""
+        user = work.get("user") or {}
+        face = user.get("face") or {}
+
+        info: dict[str, Any] = {
+            "title": work.get("name"),
+            "author_name": user.get("nickname"),
+            "author_avatar": AllcppParser._build_face_url(face.get("picUrl")),
+            "theme": work.get("theme"),
+            "type_label": AllcppParser._work_type_label(work.get("type")),
+            "hot": work.get("hotCount"),
+            "tags": [],
+            "foreword": None,
+            "content": None,
+            "pics": [],
+        }
+
+        tags = work.get("tags")
+        if isinstance(tags, list):
+            info["tags"] = [
+                t.get("tag")
+                for t in tags
+                if isinstance(t, dict) and t.get("tag")
+            ]
+
+        foreword = work.get("foreword")
+        if isinstance(foreword, str) and foreword.strip():
+            info["foreword"] = AllcppParser._clean_detail(foreword)
+
+        content = work.get("content")
+        if isinstance(content, str) and content.strip():
+            info["pics"].extend(AllcppParser._extract_content_images(content))
+            info["content"] = AllcppParser._clean_detail(content)
+
+        pics = work.get("pics")
+        if isinstance(pics, list):
+            for p in pics:
+                if not isinstance(p, dict):
+                    continue
+                pic = p.get("pic")
+                pic_url = pic.get("picUrl") if isinstance(pic, dict) else None
+                url = AllcppParser._build_pic_url(str(pic_url) if pic_url else "")
+                if url:
+                    info["pics"].append(url)
+
+        return info
+
+    @staticmethod
+    def _work_type_label(work_type: Any) -> str | None:
+        """图文类型标签：0=图片，1=文字"""
+        if work_type == 0:
+            return "图片"
+        if work_type == 1:
+            return "文字"
+        return None
+
+    @staticmethod
+    def _extract_content_images(content: str) -> list[str]:
+        """提取图文正文内嵌的图片（/uupload/image/... 相对路径）"""
+        images: list[str] = []
+        for src in findall(r'<img[^>]*src="([^"]+)"', content):
+            url = AllcppParser._build_content_pic_url(src)
+            if url:
+                images.append(url)
+        return images
+
     def _extract_gallery_images(self, data: list[dict[str, Any]]) -> list[str]:
         """从试阅接口数据中提取图集图片 URL"""
         images: list[str] = []
@@ -228,6 +361,27 @@ class AllcppParser(BaseParser):
         return "\n".join(parts) if parts else None
 
     @staticmethod
+    def _build_work_text(info: dict[str, Any], title: str) -> str | None:
+        parts: list[str] = []
+        if title:
+            parts.append(title)
+        if info.get("author_name"):
+            parts.append(f"作者：{info['author_name']}")
+        if info.get("theme"):
+            parts.append(f"主题：{info['theme']}")
+        if info.get("type_label"):
+            parts.append(f"类型：{info['type_label']}")
+        if info.get("tags"):
+            parts.append("标签：" + " · ".join(info["tags"]))
+        if info.get("hot"):
+            parts.append(f"热度：{info['hot']}")
+        if info.get("foreword"):
+            parts.append(info["foreword"])
+        if info.get("content"):
+            parts.append(info["content"])
+        return "\n".join(parts) if parts else None
+
+    @staticmethod
     def _collect_images(cover: str | None, gallery: list[str]) -> list[str]:
         """合并封面与图集，去重"""
         images: list[str] = []
@@ -248,6 +402,26 @@ class AllcppParser(BaseParser):
         if raw.startswith("http"):
             return raw
         return f"{PIC_CDN}/upload/{raw.lstrip('/')}"
+
+    @staticmethod
+    def _build_face_url(raw: str) -> str | None:
+        """用户头像 URL（/face/ 目录）"""
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        if raw.startswith("http"):
+            return raw
+        return f"{PIC_CDN}/face/{raw.lstrip('/')}"
+
+    @staticmethod
+    def _build_content_pic_url(raw: str) -> str | None:
+        """正文内嵌图片 URL（/uupload/image/... 已含目录前缀）"""
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        if raw.startswith("http"):
+            return raw
+        return f"{PIC_CDN}/{raw.lstrip('/')}"
 
     @staticmethod
     def _clean_text(text: str) -> str:
