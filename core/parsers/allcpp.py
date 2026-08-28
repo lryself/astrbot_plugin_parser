@@ -563,6 +563,9 @@ class AllcppParser(BaseParser):
             r"(?:shiyueUrl|otherUrl)\s*[:=]\s*[\"']([^\"']+)[\"']",
             unescape(content or ""),
         )
+        values = [
+            f"https:{url}" if url.startswith("//") else url for url in values
+        ]
         return AllcppParser._deduplicate_links(values)
 
     @staticmethod
