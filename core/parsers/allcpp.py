@@ -4,6 +4,7 @@ import json
 from html import unescape
 from re import DOTALL, Match, findall, search, sub
 from typing import Any, ClassVar
+from urllib.parse import urljoin
 
 from aiohttp import ClientError
 
@@ -15,6 +16,7 @@ from .base import BaseParser, ParseException, handle
 
 # 图片 CDN，与页面 `getLookWebPicUrl()` 对应
 PIC_CDN = "https://imagecdn3.allcpp.cn"
+SITE_BASE = "https://www.allcpp.cn/"
 
 
 class AllcppParser(BaseParser):
@@ -44,9 +46,11 @@ class AllcppParser(BaseParser):
                 "referer": "https://www.allcpp.cn/",
             }
         )
+        # 公开资源不携带 Cookie，避免把登录态暴露给不需要鉴权的请求。
+        self.auth_headers = self.headers.copy()
         self.cookiejar = CookieJar(config, self.mycfg, domain="allcpp.cn")
         if self.cookiejar.cookies_str:
-            self.headers["cookie"] = self.cookiejar.cookies_str
+            self.auth_headers["cookie"] = self.cookiejar.cookies_str
 
     # https://icp.red/WmBvrs8XK （短链，重定向到 allcpp 展品页）
     @handle("icp.red", r"icp\.red/(?P<short_code>[A-Za-z0-9]+)")
@@ -67,10 +71,32 @@ class AllcppParser(BaseParser):
 
         # 图集（试阅）需要登录，未登录时退化为仅封面；样图同样并入
         gallery = self._extract_gallery_images(await self._fetch_gallery(did))
-        image_urls = self._collect_images(info["cover"], gallery + info["sample_images"])
-        image_contents: list[MediaContent] = (
-            self.create_image_contents(image_urls) if image_urls else []
+        public_image_urls = self._collect_images(info["cover"], [])
+        protected_image_urls = self._collect_images(
+            None, gallery + info["sample_images"]
         )
+        public_keys = {url.split("?", 1)[0] for url in public_image_urls}
+        protected_image_urls = [
+            url
+            for url in protected_image_urls
+            if url.split("?", 1)[0] not in public_keys
+        ]
+
+        image_contents: list[MediaContent] = []
+        if public_image_urls:
+            image_contents.extend(
+                self.create_image_contents(
+                    public_image_urls,
+                    headers=self._image_headers(page_url),
+                )
+            )
+        if protected_image_urls:
+            image_contents.extend(
+                self.create_image_contents(
+                    protected_image_urls,
+                    headers=self._image_headers(page_url, use_auth=True),
+                )
+            )
 
         text = self._build_text(info, title)
         contents: list[MediaContent] = []
@@ -108,15 +134,22 @@ class AllcppParser(BaseParser):
         info = self._parse_work_data(await self._fetch_work(wid))
 
         title = info["title"] or f"图文 {wid}"
+        image_headers = self._image_headers(page_url)
         author = (
-            self.create_author(info["author_name"], avatar_url=info["author_avatar"])
+            self.create_author(
+                info["author_name"],
+                avatar_url=info["author_avatar"],
+                headers=image_headers,
+            )
             if info["author_name"]
             else None
         )
 
         image_urls = self._collect_images(None, info["pics"])
         image_contents: list[MediaContent] = (
-            self.create_image_contents(image_urls) if image_urls else []
+            self.create_image_contents(image_urls, headers=image_headers)
+            if image_urls
+            else []
         )
 
         show_work_content = bool(getattr(self.mycfg, "show_work_content", False))
@@ -155,10 +188,17 @@ class AllcppParser(BaseParser):
 
     async def _fetch_page(self, url: str) -> str:
         """拉取展品详情页 HTML"""
-        async with self.session.get(url, headers=self.headers) as resp:
+        async with self.session.get(url, headers=self.auth_headers) as resp:
             if resp.status >= 400:
                 raise ClientError(f"HTTP {resp.status} {resp.reason}")
             return await resp.text()
+
+    def _image_headers(
+        self, page_url: str, *, use_auth: bool = False
+    ) -> dict[str, str]:
+        """生成图片请求头；仅登录后可见的详情/试阅图片携带 Cookie。"""
+        headers = self.auth_headers if use_auth else self.headers
+        return {**headers, "referer": page_url}
 
     async def _fetch_gallery(self, did: str) -> list[dict[str, Any]]:
         """拉取展品试阅（图集）内容，失败或未登录时返回空列表"""
@@ -166,7 +206,7 @@ class AllcppParser(BaseParser):
         params = {"pageindex": 1, "pagesize": 20, "id": did, "_plat": "web"}
         try:
             async with self.session.get(
-                url, params=params, headers=self.headers
+                url, params=params, headers=self.auth_headers
             ) as resp:
                 if resp.status >= 400:
                     return []
@@ -214,7 +254,7 @@ class AllcppParser(BaseParser):
 
         # 封面（取原图 href，不含 OSS 压缩样式）
         if m := search(r'<a class="djs-info-cover"[^>]*href="([^"]+)"', html_text):
-            info["cover"] = m.group(1).strip()
+            info["cover"] = self._normalize_page_url(m.group(1))
 
         # 标签
         if m := search(r'<ul class="djs-info-tag">(.*?)</ul>', html_text, DOTALL):
@@ -251,8 +291,9 @@ class AllcppParser(BaseParser):
             if p := search(r"<p[^>]*>(.*?)</p>", detail_block, DOTALL):
                 info["detail_text"] = self._clean_detail(p.group(1))
             info["sample_images"] = [
-                u.split("?")[0]
+                url
                 for u in findall(r'<img[^>]*src="([^"]+)"', detail_block)
+                if (url := self._build_content_pic_url(u))
             ]
 
         return info
@@ -260,13 +301,17 @@ class AllcppParser(BaseParser):
     @staticmethod
     def _parse_work_data(work: dict[str, Any]) -> dict[str, Any]:
         """从图文接口数据中提取展示信息"""
-        user = work.get("user") or {}
-        face = user.get("face") or {}
+        user = AllcppParser._as_dict(work.get("user"))
+        face = AllcppParser._as_dict(user.get("face"))
+        author_name = user.get("nickname")
+        author_avatar = face.get("picUrl")
 
         info: dict[str, Any] = {
             "title": work.get("name"),
-            "author_name": user.get("nickname"),
-            "author_avatar": AllcppParser._build_face_url(face.get("picUrl")),
+            "author_name": author_name if isinstance(author_name, str) else None,
+            "author_avatar": AllcppParser._build_face_url(
+                author_avatar if isinstance(author_avatar, str) else ""
+            ),
             "theme": work.get("theme"),
             "type_label": AllcppParser._work_type_label(work.get("type")),
             "hot": work.get("hotCount"),
@@ -324,6 +369,11 @@ class AllcppParser(BaseParser):
             if url:
                 images.append(url)
         return images
+
+    @staticmethod
+    def _as_dict(value: Any) -> dict[str, Any]:
+        """接口字段异常时降级为空对象，避免单个字段导致整个解析失败。"""
+        return value if isinstance(value, dict) else {}
 
     def _extract_gallery_images(self, data: list[dict[str, Any]]) -> list[str]:
         """从试阅接口数据中提取图集图片 URL"""
@@ -422,32 +472,55 @@ class AllcppParser(BaseParser):
 
     @staticmethod
     def _build_pic_url(raw: str) -> str | None:
-        raw = (raw or "").strip()
+        raw = unescape(raw or "").strip()
         if not raw:
             return None
-        if raw.startswith("http"):
+        if raw.startswith(("http://", "https://")):
             return raw
+        if raw.startswith("//"):
+            return f"https:{raw}"
+        if raw.startswith("/upload/"):
+            return f"{PIC_CDN}{raw}"
+        if raw.startswith("upload/"):
+            return f"{PIC_CDN}/{raw}"
         return f"{PIC_CDN}/upload/{raw.lstrip('/')}"
 
     @staticmethod
     def _build_face_url(raw: str) -> str | None:
         """用户头像 URL（/face/ 目录）"""
-        raw = (raw or "").strip()
+        raw = unescape(raw or "").strip()
         if not raw:
             return None
-        if raw.startswith("http"):
+        if raw.startswith(("http://", "https://")):
             return raw
+        if raw.startswith("//"):
+            return f"https:{raw}"
+        if raw.startswith("/face/"):
+            return f"{PIC_CDN}{raw}"
+        if raw.startswith("face/"):
+            return f"{PIC_CDN}/{raw}"
         return f"{PIC_CDN}/face/{raw.lstrip('/')}"
 
     @staticmethod
     def _build_content_pic_url(raw: str) -> str | None:
         """正文内嵌图片 URL（/uupload/image/... 已含目录前缀）"""
-        raw = (raw or "").strip()
+        raw = unescape(raw or "").strip()
         if not raw:
             return None
-        if raw.startswith("http"):
+        if raw.startswith(("http://", "https://")):
             return raw
+        if raw.startswith("//"):
+            return f"https:{raw}"
         return f"{PIC_CDN}/{raw.lstrip('/')}"
+
+    @staticmethod
+    def _normalize_page_url(raw: str) -> str | None:
+        """将详情页里引用的封面地址统一为可下载的绝对 HTTP(S) URL。"""
+        value = unescape(raw or "").strip()
+        if not value:
+            return None
+        url = urljoin(SITE_BASE, value)
+        return url if url.startswith(("http://", "https://")) else None
 
     @staticmethod
     def _clean_text(text: str) -> str:
