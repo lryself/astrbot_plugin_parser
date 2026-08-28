@@ -214,7 +214,7 @@ class AllcppParser(BaseParser):
                 if resp.status >= 400:
                     return []
                 data = await resp.json()
-        except (ClientError, ValueError):
+        except (ClientError, TimeoutError, ValueError):
             return []
         return data if isinstance(data, list) else []
 
@@ -227,7 +227,7 @@ class AllcppParser(BaseParser):
                     raise ClientError(f"HTTP {resp.status} {resp.reason}")
                 text = await resp.text()
                 data = json.loads(text) if text.strip() else None
-        except (ClientError, ValueError):
+        except (ClientError, TimeoutError, ValueError):
             raise ParseException(f"图文 {wid} 不存在或已删除")
         if not isinstance(data, dict) or not data.get("id"):
             raise ParseException(f"图文 {wid} 不存在或已删除")
