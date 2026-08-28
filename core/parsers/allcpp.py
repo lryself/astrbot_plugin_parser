@@ -256,6 +256,11 @@ class AllcppParser(BaseParser):
         if m := search(r"var IS_USER_TRUENAME=(\w+);", html_text):
             info["is_logged_in"] = m.group(1).lower() == "true"
 
+        # 展品级试阅外链（登录后页面脚本中的 shiyueUrl / otherUrl）。
+        info["external_links"].extend(
+            self._extract_trial_url_variables(html_text)
+        )
+
         # 封面（取原图 href，不含 OSS 压缩样式）
         if m := search(r'<a class="djs-info-cover"[^>]*href="([^"]+)"', html_text):
             info["cover"] = self._normalize_page_url(m.group(1))
@@ -299,8 +304,11 @@ class AllcppParser(BaseParser):
                 for u in findall(r'<img[^>]*src="([^"]+)"', detail_block)
                 if (url := self._build_content_pic_url(u))
             ]
-            info["external_links"] = self._extract_external_links(detail_block)
+            info["external_links"].extend(
+                self._extract_external_links(detail_block)
+            )
 
+        info["external_links"] = self._deduplicate_links(info["external_links"])
         return info
 
     @staticmethod
@@ -547,6 +555,15 @@ class AllcppParser(BaseParser):
             f"https:{url}" if url.startswith("//") else url for url in raw_links
         ]
         return AllcppParser._deduplicate_links(raw_links)
+
+    @staticmethod
+    def _extract_trial_url_variables(content: str) -> list[str]:
+        """提取展品详情页脚本注入的试阅外链变量。"""
+        values = findall(
+            r"(?:shiyueUrl|otherUrl)\s*[:=]\s*[\"']([^\"']+)[\"']",
+            unescape(content or ""),
+        )
+        return AllcppParser._deduplicate_links(values)
 
     @staticmethod
     def _deduplicate_links(links: list[str]) -> list[str]:
