@@ -4,7 +4,7 @@ import json
 from html import unescape
 from re import DOTALL, Match, findall, search, sub
 from typing import Any, ClassVar
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from aiohttp import ClientError
 
@@ -70,7 +70,10 @@ class AllcppParser(BaseParser):
         author = self.create_author(info["author_name"]) if info["author_name"] else None
 
         # 图集（试阅）需要登录，未登录时退化为仅封面；样图同样并入
-        gallery = self._extract_gallery_images(await self._fetch_gallery(did))
+        gallery, external_links = self._extract_gallery_content(
+            await self._fetch_gallery(did)
+        )
+        info["external_links"].extend(external_links)
         public_image_urls = self._collect_images(info["cover"], [])
         protected_image_urls = self._collect_images(
             None, gallery + info["sample_images"]
@@ -241,6 +244,7 @@ class AllcppParser(BaseParser):
             "author_name": None,
             "detail_text": None,
             "sample_images": [],
+            "external_links": [],
             "is_logged_in": False,
         }
 
@@ -295,6 +299,7 @@ class AllcppParser(BaseParser):
                 for u in findall(r'<img[^>]*src="([^"]+)"', detail_block)
                 if (url := self._build_content_pic_url(u))
             ]
+            info["external_links"] = self._extract_external_links(detail_block)
 
         return info
 
@@ -375,15 +380,23 @@ class AllcppParser(BaseParser):
         """接口字段异常时降级为空对象，避免单个字段导致整个解析失败。"""
         return value if isinstance(value, dict) else {}
 
-    def _extract_gallery_images(self, data: list[dict[str, Any]]) -> list[str]:
-        """从试阅接口数据中提取图集图片 URL"""
+    def _extract_gallery_content(
+        self, data: list[dict[str, Any]]
+    ) -> tuple[list[str], list[str]]:
+        """从试阅接口数据中提取图片及图文试阅内的外部链接。"""
         images: list[str] = []
+        external_links: list[str] = []
         for item in data:
             if not isinstance(item, dict):
                 continue
             works = item.get("works")
             if not isinstance(works, dict):
                 continue
+
+            content = works.get("content")
+            if isinstance(content, str):
+                external_links.extend(self._extract_external_links(content))
+
             pics = works.get("pics")
             if not isinstance(pics, list):
                 continue
@@ -397,7 +410,7 @@ class AllcppParser(BaseParser):
                 url = self._build_pic_url(str(pic_url) if pic_url else "")
                 if url:
                     images.append(url)
-        return images
+        return images, self._deduplicate_links(external_links)
 
     @staticmethod
     def _build_text(info: dict[str, Any], title: str) -> str | None:
@@ -414,6 +427,8 @@ class AllcppParser(BaseParser):
             parts.append(f"状态：{info['status']}")
         if info.get("detail_text"):
             parts.append(info["detail_text"])
+        if links := info.get("external_links"):
+            parts.append("试阅外部链接：\n" + "\n".join(links))
         if not info.get("is_logged_in"):
             parts.append("（未登录，无法获取展品详情与图集，配置 Cookie 后可查看）")
         return "\n".join(parts) if parts else None
@@ -521,6 +536,37 @@ class AllcppParser(BaseParser):
             return None
         url = urljoin(SITE_BASE, value)
         return url if url.startswith(("http://", "https://")) else None
+
+    @staticmethod
+    def _extract_external_links(content: str) -> list[str]:
+        """提取试阅 HTML 中的外部 HTTP(S) 链接，忽略 AllCPP 站内地址。"""
+        raw_links = findall(
+            r"(?:https?:)?//[^\s<>\"']+", unescape(content or "")
+        )
+        raw_links = [
+            f"https:{url}" if url.startswith("//") else url for url in raw_links
+        ]
+        return AllcppParser._deduplicate_links(raw_links)
+
+    @staticmethod
+    def _deduplicate_links(links: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in links:
+            url = raw.rstrip(".,;:!?)】）〉》")
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").lower()
+            if (
+                parsed.scheme not in ("http", "https")
+                or not host
+                or host == "allcpp.cn"
+                or host.endswith(".allcpp.cn")
+                or url in seen
+            ):
+                continue
+            seen.add(url)
+            result.append(url)
+        return result
 
     @staticmethod
     def _clean_text(text: str) -> str:
