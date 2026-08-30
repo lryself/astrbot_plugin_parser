@@ -162,7 +162,7 @@ class ParserPlugin(Star):
 
         # 引用解析
         reply_seg = next((seg for seg in chain if isinstance(seg, Reply)), None)
-        if reply_seg and reply_seg.chain:
+        if self.cfg.enable_reply_parse and reply_seg and reply_seg.chain:
             reply_texts = []
             for seg in reply_seg.chain:
                 if isinstance(seg, Plain):

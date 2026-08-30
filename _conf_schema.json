@@ -23,6 +23,12 @@
         "type": "bool",
         "default": true
     },
+    "enable_reply_parse": {
+        "description": "引用消息解析",
+        "hint": "开启后，可通过引用包含链接的消息触发解析",
+        "type": "bool",
+        "default": false
+    },
     "debounce_interval": {
         "description": "防抖秒数",
         "hint": "防抖机制：同一个会话下，防抖时间内不解析那些已经解析过的链接。设为 0 表示不启用防抖机制",
