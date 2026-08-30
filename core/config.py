@@ -156,6 +156,8 @@ class ParserItem(ConfigNode):
     use_proxy: bool
     cookies: str | None
     show_body_text: bool | None
+    show_work_content: bool | None
+    text_max_length: int | None
     video_send_mode: str | None
     video_codec_list: list | None
     video_quality: str | None
@@ -174,6 +176,7 @@ class ParserItem(ConfigNode):
 
 class ParserConfig(ConfigNodeContainer):
     acfun: ParserItem
+    allcpp: ParserItem
     bilibili: ParserItem
     douyin: ParserItem
     instagram: ParserItem
