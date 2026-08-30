@@ -122,10 +122,10 @@ class FontSet:
     indicator_font: FontInfo
 
     @classmethod
-    def new(cls, font_path: Path):
+    def new(cls, font_data: bytes):
         font_infos: dict[str, FontInfo] = {}
         for name, size in cls._FONT_SIZES:
-            font = ImageFont.truetype(font_path, size)
+            font = ImageFont.truetype(BytesIO(font_data), size)
             font_infos[f"{name}_font"] = FontInfo(
                 font=font,
                 line_height=get_font_height(font),
@@ -328,7 +328,7 @@ class Renderer:
 
         font_path = cls.DEFAULT_FONT_PATH
         # 创建 FontSet 对象
-        cls.fontset = FontSet.new(font_path)
+        cls.fontset = FontSet.new(font_path.read_bytes())
         logger.debug(f"加载字体「{font_path.name}」成功")
 
     @classmethod
