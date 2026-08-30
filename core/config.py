@@ -211,6 +211,7 @@ class PluginConfig(ConfigNode):
 
     arbiter: bool
     require_at_in_group: bool
+    enable_reply_parse: bool
     debounce_interval: int
 
     source_max_size: int
