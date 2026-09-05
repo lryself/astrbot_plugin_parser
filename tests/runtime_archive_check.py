@@ -75,7 +75,8 @@ async def check():
 
             async def fail_delivery(event, result):
                 path = await result.contents[0].get_path()
-                assert path.is_relative_to(root / "archive")
+                assert path.is_relative_to(root / "cache")
+                assert len(list((root / "archive").rglob("*.mp4"))) == 1
                 assert path.read_bytes() == (root / "web" / "video.mp4").read_bytes()
                 sender_calls.append(path)
                 raise RuntimeError("QQ transport unavailable")

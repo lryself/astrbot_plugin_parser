@@ -172,11 +172,10 @@ class VideoArchiver:
                         # File I/O keeps running after task cancellation; keep the cache lease
                         # until the copy finishes, so cleanup cannot race an orphaned worker.
                         try:
-                            path, created = await asyncio.shield(operation)
+                            _, created = await asyncio.shield(operation)
                         except asyncio.CancelledError:
                             await operation
                             raise
-                    content.path_task = path
                     if created:
                         report.saved += 1
                     else:

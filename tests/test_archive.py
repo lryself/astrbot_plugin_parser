@@ -104,8 +104,8 @@ async def test_multiple_videos_dedup_groups_and_report_failed_download(tmp_path)
     a = VideoArchiver(str(tmp_path / "archive"), tmp_path / "cache")
     report = await a.archive(result)
     assert (report.saved, report.existing, report.failed) == (2, 0, 1)
-    assert (await v1.get_path()).is_relative_to(tmp_path / "archive")
-    assert (await v1.get_path()) != (await v2.get_path())
+    assert await v1.get_path() == source
+    assert await v2.get_path() == source
     assert len(list((tmp_path / "archive").rglob("*.mp4"))) == 2
     report = await a.archive(result)
     assert (report.saved, report.existing, report.failed) == (0, 2, 1)
