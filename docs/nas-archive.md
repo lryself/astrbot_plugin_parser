@@ -6,7 +6,7 @@
 ## 配置与触发
 
 - `archive_directory`：容器内的绝对目录，留空关闭。必须与插件 cache 目录分开。
-- `archive_users`：允许归档的发送者，例如 `aiocqhttp:123456789`。留空无人可归档；不授予 AstrBot 管理员权限。
+- `archive_users`：允许归档的发送者，例如 `aiocqhttp:123456789`。填写 `*` 允许所有私聊用户；`*` 不扩大群聊权限。留空无人可归档；不授予 AstrBot 管理员权限。
 - `archive_groups`：允许归档的完整群会话 unified_msg_origin；空列表只允许私聊。
 - `enable_reply_parse`：使用回复卡片归档时需开启。
 

@@ -118,7 +118,7 @@ class VideoArchiver:
         """Require an allowed sender; group archives also need an explicit command."""
         return bool(
             self.directory
-            and sender in users
+            and (sender in users or (private and "*" in users))
             and (
                 private
                 or (

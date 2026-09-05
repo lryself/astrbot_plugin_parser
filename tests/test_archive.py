@@ -188,3 +188,23 @@ async def test_cancelled_copy_finishes_before_cleanup_can_start(tmp_path, monkey
     archived = list((tmp_path / "archive").rglob("*.mp4"))
     assert len(archived) == 1 and archived[0].read_bytes() == b"complete media"
     assert archived[0].stat().st_mode & 0o444 == 0o444
+
+
+def test_wildcard_allows_any_private_sender_but_not_groups(tmp_path):
+    a = VideoArchiver(str(tmp_path / "archive"), tmp_path / "cache")
+    assert a.accepts(
+        sender="aiocqhttp:anyone",
+        users=["*"],
+        private=True,
+        origin="dm",
+        groups=[],
+        text="",
+    )
+    assert not a.accepts(
+        sender="aiocqhttp:anyone",
+        users=["*"],
+        private=False,
+        origin="group",
+        groups=["group"],
+        text="归档",
+    )

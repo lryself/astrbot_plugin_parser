@@ -728,7 +728,7 @@
     },
     "archive_users": {
         "description": "允许触发视频归档的发送者",
-        "hint": "填写 平台名:用户ID，例如 aiocqhttp:123456789。留空不允许任何人归档，不授予 AstrBot 管理权限。",
+        "hint": "填写 平台名:用户ID，例如 aiocqhttp:123456789。填写 * 允许所有私聊用户；* 不授予群聊归档或 AstrBot 管理权限。留空不允许归档。",
         "type": "list",
         "default": []
     }
