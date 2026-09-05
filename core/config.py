@@ -16,6 +16,7 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from .cache_lifecycle import CacheLifecycle
+from .media_policy import HEIGHTS, download_tier
 
 
 class ConfigNode:
@@ -234,6 +235,10 @@ class PluginConfig(ConfigNode):
     archive_directory: str
     archive_users: list[str]
     archive_groups: list[str]
+    cache_video_quality: str
+    archive_video_quality: str
+    archive_max_size: int
+    archive_max_minute: int
 
     parsers_template: list[dict[str, Any]]
 
@@ -251,8 +256,6 @@ class PluginConfig(ConfigNode):
 
         # ---------- 派生字段 ----------
         self.proxy = self.proxy or None
-        self.max_duration = self.source_max_minute * 60
-        self.max_size = self.source_max_size * 1024 * 1024
 
         tz = context.get_config().get("timezone")
         self.timezone = (
@@ -262,8 +265,8 @@ class PluginConfig(ConfigNode):
         # ---------- 路径 ----------
         self.data_dir = Path(get_astrbot_plugin_data_path()) / self._plugin_name
         self.plugin_dir = Path(get_astrbot_plugin_path()) / self._plugin_name
-        self.cache_dir = self.data_dir / "cache"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_root = self.data_dir / "cache"
+        self.cache_root.mkdir(parents=True, exist_ok=True)
         self.cookie_dir = self.data_dir / "cookies"
         self.cookie_dir.mkdir(parents=True, exist_ok=True)
         self.default_template_file = self.plugin_dir / "default_template.json"
@@ -276,6 +279,44 @@ class PluginConfig(ConfigNode):
             self.save_config()
 
         self.parser = ParserConfig(self.parsers_template)
+
+    @property
+    def cache_dir(self) -> Path:
+        directory = self.cache_root / download_tier.get()
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    @property
+    def video_quality(self) -> str:
+        return (
+            self.archive_video_quality
+            if download_tier.get() == "archive"
+            else self.cache_video_quality
+        )
+
+    @property
+    def video_height(self) -> int | None:
+        return HEIGHTS[self.video_quality]
+
+    @property
+    def max_duration(self) -> float:
+        if download_tier.get() == "archive":
+            return (
+                self.archive_max_minute * 60
+                if self.archive_max_minute
+                else float("inf")
+            )
+        return self.source_max_minute * 60
+
+    @property
+    def max_size(self) -> float:
+        if download_tier.get() == "archive":
+            return (
+                self.archive_max_size * 1024 * 1024
+                if self.archive_max_size
+                else float("inf")
+            )
+        return self.source_max_size * 1024 * 1024
 
     @staticmethod
     def load_parser_template(file: Path) -> list[dict[str, Any]]:

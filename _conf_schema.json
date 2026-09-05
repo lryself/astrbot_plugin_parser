@@ -41,7 +41,7 @@
         "default": 300
     },
     "source_max_size": {
-        "description": "资源最大大小",
+        "description": "预览缓存单视频大小上限（MB）",
         "hint": "允许下载的音视频最大体积，单位 MB",
         "type": "int",
         "slider": {
@@ -49,7 +49,7 @@
             "max": 500,
             "step": 10
         },
-        "default": 90
+        "default": 300
     },
     "source_max_minute": {
         "description": "资源最大时长（分钟）",
@@ -174,38 +174,6 @@
                             "AV1",
                             "HEV"
                         ]
-                    },
-                    "video_quality": {
-                        "description": "B站视频分辨率",
-                        "hint": "下载B站视频的分辨率, 高画质可能需要登录才能下载成功",
-                        "type": "string",
-                        "options": [
-                            "_360P",
-                            "_480P",
-                            "_720P",
-                            "_1080P",
-                            "_1080P_PLUS",
-                            "_1080P_60",
-                            "_4K",
-                            "HDR",
-                            "DOLBY",
-                            "_8K",
-                            "AI_REPAIR"
-                        ],
-                        "labels": [
-                            "360P 流畅",
-                            "480P 标清",
-                            "720P 高清",
-                            "1080P 全高清",
-                            "1080P+ 增强版",
-                            "1080P 60帧",
-                            "4K 超高清",
-                            "HDR 高动态范围",
-                            "杜比视界 Dolby Vision",
-                            "8K 超高清",
-                            "AI修复"
-                        ],
-                        "default": "_720P"
                     }
                 }
             },
@@ -731,5 +699,47 @@
         "hint": "填写 平台名:用户ID，例如 aiocqhttp:123456789。填写 * 允许所有私聊用户；* 不授予群聊归档或 AstrBot 管理权限。留空不允许归档。",
         "type": "list",
         "default": []
+    },
+    "cache_video_quality": {
+        "description": "预览缓存视频清晰度",
+        "hint": "B站与 yt-dlp 选流上限；默认1080P。平台仅提供单一地址时以该平台实际资源为准。",
+        "type": "string",
+        "options": [
+            "360P",
+            "480P",
+            "720P",
+            "1080P",
+            "4K",
+            "8K",
+            "BEST"
+        ],
+        "default": "1080P"
+    },
+    "archive_video_quality": {
+        "description": "永久归档视频清晰度",
+        "hint": "BEST表示账号权限范围内最高可用清晰度；与预览缓存独立下载。",
+        "type": "string",
+        "options": [
+            "360P",
+            "480P",
+            "720P",
+            "1080P",
+            "4K",
+            "8K",
+            "BEST"
+        ],
+        "default": "BEST"
+    },
+    "archive_max_size": {
+        "description": "归档单视频大小上限（MB）",
+        "hint": "0表示不限制，不继承预览缓存大小限制。",
+        "type": "int",
+        "default": 0
+    },
+    "archive_max_minute": {
+        "description": "归档单P时长上限（分钟）",
+        "hint": "0表示不限制。",
+        "type": "int",
+        "default": 0
     }
 }

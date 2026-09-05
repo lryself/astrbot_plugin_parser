@@ -5,11 +5,14 @@ import hashlib
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
 from .data import ParseResult, VideoContent
+from .archive_index import ArchiveIndex
+from .cache_lifecycle import finish_io
 
 
 def safe_name(value: str) -> str:
@@ -84,6 +87,7 @@ class ArchiveReport:
     saved: int = 0
     existing: int = 0
     failed: int = 0
+    files: list[dict[str, str]] = field(default_factory=list)
 
     def message(self) -> str:
         if not (self.saved or self.existing or self.failed):
@@ -98,12 +102,30 @@ class VideoArchiver:
         if directory and not Path(directory).expanduser().is_absolute():
             raise ValueError("Archive directory must be absolute")
         self.lock = asyncio.Lock()
+        self.requests = {}
         self.directory = Path(directory).expanduser().resolve() if directory else None
         cache = cache_dir.resolve()
+        self.index = (
+            ArchiveIndex(cache.parent / "archive-index.sqlite", self.directory, cache)
+            if self.directory
+            else None
+        )
         if self.directory and (
             self.directory.is_relative_to(cache) or cache.is_relative_to(self.directory)
         ):
             raise ValueError("Archive directory and cache directory must be separate")
+
+    @asynccontextmanager
+    async def request(self, key: str):
+        entry = self.requests.setdefault(key, [asyncio.Lock(), 0])
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            if not entry[1]:
+                del self.requests[key]
 
     def accepts(
         self,
@@ -124,7 +146,7 @@ class VideoArchiver:
                 or (
                     origin in groups
                     and re.match(
-                        r"^\s*(?:请)?(?:归档|保存到\s*NAS)(?:\s|[:：]|这|该|视频|一下|$)",
+                        r"^\s*(?:请)?(?:归档|保存到\s*NAS|重新下载)(?:\s|[:：]|这|该|视频|一下|$)",
                         text,
                         re.I,
                     )
@@ -159,23 +181,17 @@ class VideoArchiver:
                 identity = f"{media_id[:32]}-{owner.get_resource_id()}-P{index:02d}"
                 try:
                     source = await content.get_path()
+                    directory = self.directory / safe_name(owner.platform.name)
+                    title = owner.title or "video"
+                    if owner.extra.get("archive_collection"):
+                        directory /= safe_name(title)
+                        part_titles = owner.extra["archive_part_titles"]
+                        title = f"P{index:02d}－{part_titles[index - 1]}"
                     async with self.lock:
-                        operation = asyncio.create_task(
-                            asyncio.to_thread(
-                                save_video,
-                                source,
-                                self.directory / safe_name(owner.platform.name),
-                                owner.title or "video",
-                                identity,
-                            )
+                        path, created = await finish_io(
+                            save_video, source, directory, title, identity
                         )
-                        # File I/O keeps running after task cancellation; keep the cache lease
-                        # until the copy finishes, so cleanup cannot race an orphaned worker.
-                        try:
-                            _, created = await asyncio.shield(operation)
-                        except asyncio.CancelledError:
-                            await operation
-                            raise
+                    report.files.append({"archive": str(path), "cache": str(source)})
                     if created:
                         report.saved += 1
                     else:

@@ -85,7 +85,6 @@ class Downloader:
 
     def __init__(self, config: PluginConfig):
         self.cfg = config
-        self.max_size = self.cfg.source_max_size
         self.default_headers: dict[str, str] = COMMON_HEADER.copy()
         # 视频信息缓存
         self.info_cache: LimitedSizeDict[str, VideoInfo] = LimitedSizeDict()
@@ -93,6 +92,17 @@ class Downloader:
         self.client = ClientSession(
             timeout=ClientTimeout(total=self.cfg.download_timeout)
         )
+
+    @property
+    def video_format(self) -> str:
+        height = self.cfg.video_height
+        return f"bv*[height<={height}]+ba/b[height<={height}]" if height else "bv*+ba/b"
+
+    async def checked_path(self, path: Path) -> Path:
+        if path.stat().st_size > self.cfg.max_size:
+            await safe_unlink(path)
+            raise SizeLimitException
+        return path
 
     async def close(self):
         """关闭网络客户端"""
@@ -113,7 +123,7 @@ class Downloader:
         file_path = self.cfg.cache_dir / file_name
         # 如果文件存在，则直接返回
         if file_path.exists():
-            return file_path
+            return await self.checked_path(file_path)
         headers = headers or self.default_headers
         retries = self.cfg.download_retry_times
         for attempt in range(retries + 1):
@@ -125,14 +135,14 @@ class Downloader:
                     if response.status >= 400:
                         raise ClientError(f"HTTP {response.status} {response.reason}")
                     content_length = response.content_length
-                    max_bytes = self.max_size * 1024 * 1024
+                    max_bytes = self.cfg.max_size
 
                     if content_length == 0:
                         logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
                         raise ZeroSizeException
                     if content_length and content_length > max_bytes:
                         logger.warning(
-                            f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
+                            f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {max_bytes / 1024 / 1024} MB, 取消下载"
                         )
                         raise SizeLimitException
 
@@ -280,7 +290,7 @@ class Downloader:
             self.download_audio(a_url, headers=headers, proxy=proxy),
         )
         await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
-        return output_path
+        return await self.checked_path(output_path)
 
     async def ytdlp_extract_info(
         self,
@@ -358,14 +368,14 @@ class Downloader:
 
         video_path = self.cfg.cache_dir / generate_file_name(url, ".mp4")
         if video_path.exists():
-            return video_path
+            return await self.checked_path(video_path)
 
         opts = {
             "outtmpl": str(video_path),
             "merge_output_format": "mp4",
             # "format": f"bv[filesize<={info.duration // 10 + 10}M]+ba/b[filesize<={info.duration // 8 + 10}M]",
             # "format": "bv*[height<=720]+ba/b[height<=720]",
-            "format": format or "best",
+            "format": self.video_format,
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
@@ -378,9 +388,11 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
+        if self.cfg.max_size != float("inf"):
+            opts["max_filesize"] = int(self.cfg.max_size)
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
             await to_thread(ydl.download, [url])
-        return video_path
+        return await self.checked_path(video_path)
 
     @auto_task
     async def ytdlp_download_video_relaxed(
@@ -396,12 +408,12 @@ class Downloader:
         file_stem = generate_file_name(url)
         video_path = self.cfg.cache_dir / f"{file_stem}.mp4"
         if video_path.exists():
-            return video_path
+            return await self.checked_path(video_path)
 
         opts = {
             "outtmpl": str(self.cfg.cache_dir / file_stem) + ".%(ext)s",
             "merge_output_format": "mp4",
-            "format": format or None,
+            "format": self.video_format,
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
@@ -418,14 +430,16 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
+        if self.cfg.max_size != float("inf"):
+            opts["max_filesize"] = int(self.cfg.max_size)
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
             await to_thread(ydl.download, [url])
         if video_path.exists():
-            return video_path
+            return await self.checked_path(video_path)
 
         candidates = sorted(self.cfg.cache_dir.glob(f"{file_stem}*.mp4"))
         if candidates:
-            return candidates[0]
+            return await self.checked_path(candidates[0])
         raise DownloadException("yt-dlp 视频下载失败")
 
     @auto_task

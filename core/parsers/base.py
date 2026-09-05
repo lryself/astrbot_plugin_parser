@@ -128,6 +128,9 @@ class BaseParser:
             await self._session.close()
             self._session = None
 
+    async def prepare_request(self, keyword: str, searched: Match[str], archive: bool):
+        return keyword, searched, f"{self.platform.name}:{searched.group(0)}"
+
     async def parse(self, keyword: str, searched: Match[str]) -> ParseResult:
         """解析 URL 提取信息
 

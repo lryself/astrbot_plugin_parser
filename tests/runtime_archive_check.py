@@ -22,6 +22,7 @@ data = importlib.import_module(f"{PACKAGE.name}.core.data")
 archive = importlib.import_module(f"{PACKAGE.name}.core.archive")
 cache = importlib.import_module(f"{PACKAGE.name}.core.cache_lifecycle")
 download = importlib.import_module(f"{PACKAGE.name}.core.download")
+configuration = importlib.import_module(f"{PACKAGE.name}.core.config")
 
 
 async def check():
@@ -43,19 +44,21 @@ async def check():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         lifecycle = cache.CacheLifecycle()
-        cfg = SimpleNamespace(
-            whitelist=[],
-            blacklist=[],
-            require_at_in_group=False,
-            enable_reply_parse=True,
-            archive_users=["aiocqhttp:owner"],
-            archive_groups=[],
-            cache_lifecycle=lifecycle,
-            cache_dir=root / "cache",
-            source_max_size=10,
-            download_timeout=10,
-            download_retry_times=0,
+        upgraded["parsers_template"] = [{"__template_key": "bilibili", "enable": False}]
+        cfg = configuration.PluginConfig(
+            upgraded, SimpleNamespace(get_config=lambda: {})
         )
+        cfg.cache_root = root / "cache"
+        cfg.archive_users = ["aiocqhttp:owner"]
+        cfg.archive_groups = []
+        cfg.cache_lifecycle = lifecycle
+        cfg.whitelist = []
+        cfg.blacklist = []
+        cfg.require_at_in_group = False
+        cfg.enable_reply_parse = True
+        cfg.source_max_size = 10
+        cfg.download_timeout = 10
+        cfg.download_retry_times = 0
         downloader = download.Downloader(cfg)
         try:
 
@@ -84,10 +87,16 @@ async def check():
             plugin = object.__new__(main.ParserPlugin)
             plugin.cfg = cfg
             plugin.archiver = archive.VideoArchiver(
-                str(root / "archive"), cfg.cache_dir
+                str(root / "archive"), cfg.cache_root
             )
             plugin.key_pattern_list = [("b23.tv", re.compile(r"https://b23.tv/\w+"))]
-            plugin.parser_map = {"b23.tv": SimpleNamespace(parse=parse)}
+
+            async def prepare(keyword, matched, archiving):
+                return keyword, matched, "bilibili:BVtest"
+
+            plugin.parser_map = {
+                "b23.tv": SimpleNamespace(parse=parse, prepare_request=prepare)
+            }
             plugin.debouncer = SimpleNamespace(
                 hit_link=lambda *a: True, hit_resource=lambda *a: False
             )
@@ -109,28 +118,31 @@ async def check():
                 plain_result=lambda text: text,
                 send=send,
             )
-            for attempt in range(2):
+            for attempt in range(3):
                 if attempt:
-                    # A replied-to JSON card must preserve the explicit command's intent.
                     card = Json(
                         data={"meta": {"detail_1": {"qqdocurl": "https://b23.tv/test"}}}
                     )
-                    chain[:] = [Reply(id="1", chain=[card]), Plain("归档")]
-                    event.message_str = "归档"
+                    command = "重新下载" if attempt == 2 else "归档"
+                    chain[:] = [Reply(id="1", chain=[card]), Plain(command)]
+                    event.message_str = command
+                if attempt == 2:
+                    (root / "web" / "video.mp4").write_bytes(b"new downloaded bytes")
                 try:
                     await plugin.on_message(event)
                 except RuntimeError as exc:
-                    assert str(exc) == "QQ transport unavailable"
+                    assert attempt != 1 and str(exc) == "QQ transport unavailable"
                 else:
-                    raise AssertionError("Expected the deliberate delivery failure")
+                    assert attempt == 1, "Only duplicate requests may skip QQ delivery"
             assert len(sender_calls) == 2
             assert messages == [
                 "视频归档：新增 1，已存在 0，失败 0。",
-                "视频归档：新增 0，已存在 1，失败 0。",
+                "视频已归档（1 个文件），跳过重复下载。",
+                "视频归档：新增 1，已存在 0，失败 0。",
             ]
-            await lifecycle.clean(cfg.cache_dir)
+            await lifecycle.clean(cfg.cache_root)
             assert len(list((root / "archive").rglob("*.mp4"))) == 1
-            assert not list(cfg.cache_dir.iterdir())
+            assert not list(cfg.cache_root.iterdir())
             print(
                 "PASS: old config, real HTTP download, explicit command, quoted JSON card, duplicate archive, failed QQ delivery, cache cleanup"
             )

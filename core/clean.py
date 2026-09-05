@@ -36,7 +36,7 @@ class CacheCleaner:
     async def _clean_plugin_cache(self) -> None:
         """删除并重建缓存目录"""
         try:
-            await self.cfg.cache_lifecycle.clean(self.cfg.cache_dir)
+            await self.cfg.cache_lifecycle.clean(self.cfg.cache_root)
             logger.info("Cache directory cleaned and recreated.")
         except Exception:
             logger.exception("Error while cleaning cache directory.")

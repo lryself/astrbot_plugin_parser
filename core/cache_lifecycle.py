@@ -6,6 +6,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 
+async def finish_io(function, *args, **kwargs):
+    """Keep lifecycle ownership until a non-cancellable file operation has settled."""
+    operation = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        await operation
+        raise
+
+
 class CacheLifecycle:
     def __init__(self):
         self.condition = asyncio.Condition()
@@ -22,14 +32,15 @@ class CacheLifecycle:
                 self.active -= 1
                 self.condition.notify_all()
 
-    async def clean(self, directory: Path):
+    @asynccontextmanager
+    async def maintenance(self):
         async with self.condition:
             await self.condition.wait_for(lambda: self.active == 0)
-            operation = asyncio.create_task(asyncio.to_thread(shutil.rmtree, directory))
+            yield
+
+    async def clean(self, directory: Path):
+        async with self.maintenance():
             try:
-                await asyncio.shield(operation)
-            except asyncio.CancelledError:
-                await operation
-                raise
+                await finish_io(shutil.rmtree, directory)
             finally:
                 directory.mkdir(parents=True, exist_ok=True)

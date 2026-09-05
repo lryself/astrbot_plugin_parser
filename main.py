@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import filter
@@ -17,9 +18,11 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 from .core.arbiter import ArbiterContext, EmojiLikeArbiter
 from .core.archive import VideoArchiver
 from .core.clean import CacheCleaner
+from .core.cache_lifecycle import finish_io
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
+from .core.media_policy import media_tier
 from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
@@ -31,7 +34,7 @@ class ParserPlugin(Star):
         super().__init__(context)
         self.cfg = PluginConfig(config, context=context)
         # 渲染器
-        self.archiver = VideoArchiver(self.cfg.archive_directory, self.cfg.cache_dir)
+        self.archiver = VideoArchiver(self.cfg.archive_directory, self.cfg.cache_root)
         self.renderer = Renderer(self.cfg)
         # 下载器
         self.downloader = Downloader(self.cfg)
@@ -222,21 +225,63 @@ class ParserPlugin(Star):
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
 
-        # Keep every completed media file alive through archival and message delivery.
-        async with self.cfg.cache_lifecycle.use():
-            parse_res = await self.parser_map[keyword].parse(keyword, searched)
-            report = (
-                await self.archiver.archive(parse_res) if archive_requested else None
-            )
-            resource_id = parse_res.get_resource_id()
-            if not self.debouncer.hit_resource(umo, resource_id):
+        parser = self.parser_map[keyword]
+        if isinstance(parser, BilibiliParser):
+            notice = await parser.login.notice()
+            if notice:
+                await event.send(event.plain_result(notice))
+        keyword, searched, source_key = await parser.prepare_request(
+            keyword, searched, archive_requested
+        )
+        async with self.archiver.request(source_key):
+            if archive_requested:
+                index = self.archiver.index
+                force = re.match(
+                    r"^\s*(?:请)?重新下载(?:\s|[:：]|这|该|视频|一下|$)",
+                    event.message_str,
+                )
+                if force:
+                    async with self.cfg.cache_lifecycle.maintenance():
+                        # A forced refresh owns both cache files and their permanent receipts.
+                        await finish_io(index.remove, source_key)
+                elif count := await finish_io(index.lookup, source_key):
+                    await event.send(
+                        event.plain_result(
+                            f"视频已归档（{count} 个文件），跳过重复下载。"
+                        )
+                    )
+                    return
+            # Archive and QQ preview use independent quality/size policies and cache paths.
+            async with self.cfg.cache_lifecycle.use():
+                report = None
+                if archive_requested:
+                    with media_tier("archive"):
+                        await finish_io(self.archiver.index.restore, source_key)
+                        parse_res = await parser.parse(keyword, searched)
+                        report = await self.archiver.archive(parse_res)
+                        if report.files:
+                            await finish_io(
+                                self.archiver.index.record,
+                                source_key,
+                                report.files,
+                                not report.failed,
+                            )
+                            for entry in report.files:
+                                cached = Path(entry["cache"])
+                                if cached.resolve().is_relative_to(
+                                    self.cfg.cache_root / "archive"
+                                ):
+                                    await finish_io(cached.unlink, missing_ok=True)
                 try:
-                    await self.sender.send_parse_result(event, parse_res)
+                    with media_tier("preview"):
+                        preview = await parser.parse(keyword, searched)
+                        if not self.debouncer.hit_resource(
+                            umo, preview.get_resource_id()
+                        ):
+                            await self.sender.send_parse_result(event, preview)
                 finally:
                     if report:
                         await event.send(event.plain_result(report.message()))
-            elif report:
-                await event.send(event.plain_result(report.message()))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")

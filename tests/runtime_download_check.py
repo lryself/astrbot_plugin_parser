@@ -42,6 +42,7 @@ async def check():
             cache_dir=Path(temp),
             cache_lifecycle=CacheLifecycle(),
             source_max_size=10,
+            max_size=10 * 1024 * 1024,
             download_timeout=10,
             download_retry_times=0,
         )

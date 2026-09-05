@@ -1,6 +1,8 @@
 import asyncio
 from re import Match
 from typing import ClassVar
+from urllib.parse import parse_qs
+from ...media_policy import download_tier
 
 from bilibili_api import request_settings, select_client
 from bilibili_api.opus import Opus
@@ -10,7 +12,7 @@ from msgspec import convert
 from astrbot.api import logger
 
 from ...config import PluginConfig
-from ...data import ImageContent, MediaContent, Platform
+from ...data import ImageContent, MediaContent, Platform, SendGroup
 from ...exception import DownloadException, DurationLimitException
 from ..base import (
     BaseParser,
@@ -43,14 +45,36 @@ class BilibiliParser(BaseParser):
             }
         )
 
-        self.video_quality = getattr(
-            VideoQuality, str(self.mycfg.video_quality).upper(), VideoQuality._720P
-        )
         self.video_codecs = [
             getattr(VideoCodecs, str(c).upper(), VideoCodecs.AVC)
             for c in (self.mycfg.video_codec_list or ["AVC"])
         ]
         self.login = BilibiliLogin(config)
+        self.download_slots = asyncio.Semaphore(3)
+
+    @staticmethod
+    def page_number(searched: Match[str]) -> int:
+        groups = searched.groupdict()
+        value = parse_qs((groups.get("query") or "").lstrip("?")).get(
+            "p", [groups.get("page_num") or "1"]
+        )[0]
+        page = int(value)
+        if page < 1:
+            raise ParseException("分 P 编号必须大于 0")
+        return page
+
+    async def prepare_request(self, keyword: str, searched: Match[str], archive: bool):
+        if keyword in ("b23.tv", "bili2233"):
+            url = await self.get_final_url(f"https://{searched.group(0)}")
+            keyword, searched = self.search_url(url)
+        groups = searched.groupdict()
+        if keyword in ("BV", "/BV", "av", "/av"):
+            bvid = groups.get("bvid") or Video(aid=int(groups["avid"])).get_bvid()
+            key = f"bilibili:{bvid}"
+            if not archive:
+                key += f":p{self.page_number(searched)}"
+            return keyword, searched, key
+        return await super().prepare_request(keyword, searched, archive)
 
     @handle("b23.tv", r"b23\.tv/[A-Za-z\d\._?%&+\-=/#]+")
     @handle("bili2233", r"bili2233\.cn/[A-Za-z\d\._?%&+\-=/#]+")
@@ -62,19 +86,19 @@ class BilibiliParser(BaseParser):
     @handle("BV", r"^(?P<bvid>BV[0-9a-zA-Z]{10})(?:\s)?(?P<page_num>\d{1,3})?$")
     @handle(
         "/BV",
-        r"bilibili\.com(?:/video)?/(?P<bvid>BV[0-9a-zA-Z]{10})(?:\?p=(?P<page_num>\d{1,3}))?",
+        r"bilibili\.com(?:/video)?/(?P<bvid>BV[0-9a-zA-Z]{10})(?:/)?(?P<query>\?[^\s#]*)?",
     )
     async def _parse_bv(self, searched: Match[str]):
         """解析视频信息"""
         bvid = str(searched.group("bvid"))
-        page_num = int(searched.group("page_num") or 1)
+        page_num = self.page_number(searched)
 
         return await self.parse_video(bvid=bvid, page_num=page_num)
 
     @handle("bm", r"^bm(?P<bvid>BV[0-9a-zA-Z]{10})(?:\s(?P<page_num>\d{1,3}))?$")
     async def _parse_bv_bm(self, searched: Match[str]):
         bvid = searched.group("bvid")
-        page = int(searched.group("page_num") or 1)
+        page = self.page_number(searched)
         _, a_url = await self.extract_download_urls(bvid=bvid, page_index=page - 1)
         if not a_url:
             raise ParseException("未找到音频链接")
@@ -88,12 +112,12 @@ class BilibiliParser(BaseParser):
     @handle("av", r"^av(?P<avid>\d{6,})(?:\s)?(?P<page_num>\d{1,3})?$")
     @handle(
         "/av",
-        r"bilibili\.com(?:/video)?/av(?P<avid>\d{6,})(?:\?p=(?P<page_num>\d{1,3}))?",
+        r"bilibili\.com(?:/video)?/av(?P<avid>\d{6,})(?:/)?(?P<query>\?[^\s#]*)?",
     )
     async def _parse_av(self, searched: Match[str]):
         """解析视频信息"""
         avid = int(searched.group("avid"))
-        page_num = int(searched.group("page_num") or 1)
+        page_num = self.page_number(searched)
 
         return await self.parse_video(avid=avid, page_num=page_num)
 
@@ -169,47 +193,70 @@ class BilibiliParser(BaseParser):
         url = f"https://bilibili.com/{video_info.bvid}"
         url += f"?p={page_info.index + 1}" if page_info.index > 0 else ""
 
-        # 视频下载 task
-        async def download_video():
-            output_path = self.cfg.cache_dir / f"{video_info.bvid}-{page_num}.mp4"
-            if output_path.exists():
-                return output_path
-            v_url, a_url = await self.extract_download_urls(
-                video=video, page_index=page_info.index
-            )
-            if page_info.duration > self.cfg.max_duration:
-                raise DurationLimitException
-            if a_url is not None:
-                return await self.downloader.download_av_and_merge(
-                    v_url,
-                    a_url,
-                    output_path=output_path,
-                    headers=self.headers,
-                    proxy=self.proxy,
-                )
-            else:
-                return await self.downloader.streamd(
-                    v_url,
-                    file_name=output_path.name,
-                    headers=self.headers,
-                    proxy=self.proxy,
-                )
-
-        video_task = asyncio.create_task(download_video())
-        video_content = self.create_video_content(
-            video_task,
-            page_info.cover,
-            page_info.duration,
+        archiving = download_tier.get() == "archive"
+        multipart = archiving and len(video_info.pages or []) > 1
+        page_numbers = (
+            range(1, len(video_info.pages) + 1) if multipart else [page_info.index + 1]
         )
+        contents = []
+        part_titles = []
+        for number in page_numbers:
+            info = video_info.extract_info_with_page(number)
+            part_titles.append(
+                video_info.pages[number - 1].part if multipart else info.title
+            )
 
+            async def download_page(info=info):
+                async with self.cfg.cache_lifecycle.use(), self.download_slots:
+                    output_path = (
+                        self.cfg.cache_dir / f"{video_info.bvid}-{info.index + 1}.mp4"
+                    )
+                    if output_path.exists():
+                        return await self.downloader.checked_path(output_path)
+                    if info.duration > self.cfg.max_duration:
+                        raise DurationLimitException
+                    v_url, a_url = await self.extract_download_urls(
+                        video=video, page_index=info.index
+                    )
+                    if a_url is not None:
+                        path = await self.downloader.download_av_and_merge(
+                            v_url,
+                            a_url,
+                            output_path=output_path,
+                            headers=self.headers,
+                            proxy=self.proxy,
+                        )
+                    else:
+                        path = await self.downloader.streamd(
+                            v_url,
+                            file_name=output_path.name,
+                            headers=self.headers,
+                            proxy=self.proxy,
+                        )
+                    if path.stat().st_size > self.cfg.max_size:
+                        await asyncio.to_thread(path.unlink, missing_ok=True)
+                        from ...exception import SizeLimitException
+
+                        raise SizeLimitException
+                    return path
+
+            task = asyncio.create_task(download_page())
+            contents.append(self.create_video_content(task, info.cover, info.duration))
+
+        extra = {"info": ai_summary}
+        if multipart:
+            extra.update(archive_collection=True, archive_part_titles=part_titles)
         return self.result(
-            url=url,
-            title=page_info.title,
-            timestamp=page_info.timestamp,
+            url=f"https://bilibili.com/{video_info.bvid}" if multipart else url,
+            title=video_info.title if multipart else page_info.title,
+            timestamp=video_info.pubdate if multipart else page_info.timestamp,
             text=text,
             author=author,
-            contents=[video_content],
-            extra={"info": ai_summary},
+            contents=contents,
+            extra=extra,
+            send_groups=[SendGroup(contents=[contents[page_info.index]])]
+            if multipart
+            else [],
         )
 
     async def parse_dynamic(self, dynamic_id: int):
@@ -423,13 +470,18 @@ class BilibiliParser(BaseParser):
             if isinstance(codecs, str) and codecs.startswith("hvc1"):
                 video_data["codecs"] = f"hev,{codecs}"
         detecter = VideoDownloadURLDataDetecter(download_url_data)
+        archiving = download_tier.get() == "archive"
+        quality = self.cfg.video_quality
         streams = detecter.detect_best_streams(
-            video_max_quality=self.video_quality,
-            codecs=self.video_codecs,
-            no_dolby_video=True,
-            no_hdr=True,
+            video_max_quality=VideoQuality._8K
+            if quality == "BEST"
+            else getattr(VideoQuality, f"_{quality}"),
+            codecs=[VideoCodecs.AV1, VideoCodecs.HEV, VideoCodecs.AVC]
+            if archiving
+            else self.video_codecs,
+            no_dolby_video=not archiving,
+            no_hdr=not archiving,
         )
-        dash_data = download_url_data.get("dash") or {}
         if not streams:
             raise DownloadException("未找到可下载的视频流（可能是所选编码无对应流）")
         video_stream = streams[0]

@@ -106,7 +106,9 @@ class BilibiliLogin:
 
         if self._credential is None:
             await self._init_credential()
-            return self._credential
+
+        if self._credential is None:
+            return None
 
         if not self._credential.has_sessdata():
             self._load_credential()
@@ -130,3 +132,14 @@ class BilibiliLogin:
                 )
 
         return self._credential
+
+    async def notice(self) -> str | None:
+        try:
+            if await self.credential is not None:
+                return None
+        except Exception as exc:
+            logger.warning(
+                f"Unable to verify Bilibili login status ({type(exc).__name__})"
+            )
+            return "暂时无法确认 B 站登录状态，请稍后重试；这不代表已退出登录。"
+        return "B 站尚未登录或登录已失效。可在插件配置中填写 Cookie，或由 AstrBot 管理员发送 /blogin 扫码登录；当前仅能使用账号权限允许的公开清晰度。"
