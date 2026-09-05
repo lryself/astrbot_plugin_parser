@@ -189,6 +189,12 @@ class ParserPlugin(Star):
                 keyword, searched = kw, m
                 break
         if searched is None:
+            if re.match(r"^\s*(?:请)?重新下载", event.message_str):
+                await event.send(
+                    event.plain_result(
+                        "未找到原视频链接，请回复原始分享卡片，或发送“重新下载＋视频链接”。"
+                    )
+                )
             return
         logger.debug(f"匹配结果: {keyword}, {searched}")
 

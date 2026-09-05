@@ -144,7 +144,10 @@ class BaseParser:
         Raises:
             ParseException: 解析失败时抛出
         """
-        return await self._handlers[keyword](self, searched)
+        result = await self._handlers[keyword](self, searched)
+        if not result.url:
+            result.url = searched.group(0)
+        return result
 
     async def parse_with_redirect(
         self,
