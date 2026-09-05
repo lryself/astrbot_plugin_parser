@@ -15,6 +15,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 
 from .core.arbiter import ArbiterContext, EmojiLikeArbiter
+from .core.archive import VideoArchiver
 from .core.clean import CacheCleaner
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
@@ -30,6 +31,7 @@ class ParserPlugin(Star):
         super().__init__(context)
         self.cfg = PluginConfig(config, context=context)
         # 渲染器
+        self.archiver = VideoArchiver(self.cfg.archive_directory, self.cfg.cache_dir)
         self.renderer = Renderer(self.cfg)
         # 下载器
         self.downloader = Downloader(self.cfg)
@@ -129,7 +131,6 @@ class ParserPlugin(Star):
         if not chain:
             return
 
-        seg1 = chain[0]
         text = event.message_str
 
         # 指定机制：专门@其他bot的消息不解析
@@ -207,23 +208,35 @@ class ParserPlugin(Star):
                 return
             logger.debug("Bot在仲裁中胜出, 准备解析...")
 
+        archive_requested = self.archiver.accepts(
+            sender=f"{event.get_platform_name()}:{event.get_sender_id()}",
+            users=self.cfg.archive_users,
+            private=event.is_private_chat(),
+            origin=umo,
+            groups=self.cfg.archive_groups,
+            text=event.message_str,
+        )
         # 基于link防抖
         link = searched.group(0)
-        if self.debouncer.hit_link(umo, link):
+        if not archive_requested and self.debouncer.hit_link(umo, link):
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
 
-        # 解析
-        parse_res = await self.parser_map[keyword].parse(keyword, searched)
-
-        # 基于资源ID防抖
-        resource_id = parse_res.get_resource_id()
-        if self.debouncer.hit_resource(umo, resource_id):
-            logger.warning(f"[资源防抖] 资源 {resource_id} 在防抖时间内，跳过发送")
-            return
-
-        # 发送
-        await self.sender.send_parse_result(event, parse_res)
+        # Keep every completed media file alive through archival and message delivery.
+        async with self.cfg.cache_lifecycle.use():
+            parse_res = await self.parser_map[keyword].parse(keyword, searched)
+            report = (
+                await self.archiver.archive(parse_res) if archive_requested else None
+            )
+            resource_id = parse_res.get_resource_id()
+            if not self.debouncer.hit_resource(umo, resource_id):
+                try:
+                    await self.sender.send_parse_result(event, parse_res)
+                finally:
+                    if report:
+                        await event.send(event.plain_result(report.message()))
+            elif report:
+                await event.send(event.plain_result(report.message()))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")

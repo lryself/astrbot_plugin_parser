@@ -1,9 +1,5 @@
-import asyncio
-import shutil
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-
 from astrbot.api import logger
 
 from .config import PluginConfig
@@ -39,10 +35,8 @@ class CacheCleaner:
 
     async def _clean_plugin_cache(self) -> None:
         """删除并重建缓存目录"""
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, shutil.rmtree, self.cfg.cache_dir)
-            self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+            await self.cfg.cache_lifecycle.clean(self.cfg.cache_dir)
             logger.info("Cache directory cleaned and recreated.")
         except Exception:
             logger.exception("Error while cleaning cache directory.")

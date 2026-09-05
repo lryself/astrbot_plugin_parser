@@ -6,6 +6,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
 from astrbot.api import logger
 
@@ -72,10 +73,10 @@ async def merge_av(
         output_path (Path): 输出文件路径
     """
     target_path = output_path
-    if output_path in (v_path, a_path):
-        output_path = output_path.with_name(
-            f"{output_path.stem}_merged{output_path.suffix}"
-        )
+    # Keep the completed cache name invisible until ffmpeg has finished successfully.
+    output_path = output_path.with_name(
+        f".{output_path.stem}.{uuid4().hex}{output_path.suffix}"
+    )
     logger.info(f"Merging {v_path.name} and {a_path.name} to {output_path.name}")
 
     cmd = [
@@ -94,11 +95,12 @@ async def merge_av(
         str(output_path),
     ]
 
-    await exec_ffmpeg_cmd(cmd)
-    if output_path != target_path:
-        await safe_unlink(target_path)
+    try:
+        await exec_ffmpeg_cmd(cmd)
         await asyncio.to_thread(output_path.replace, target_path)
-        output_path = target_path
+    finally:
+        await safe_unlink(output_path)
+    output_path = target_path
     cleanup = [p for p in (v_path, a_path) if p != output_path]
     await asyncio.gather(*(safe_unlink(p) for p in cleanup))
     logger.info(f"Merged {output_path.name}, {fmt_size(output_path)}")

@@ -1,3 +1,5 @@
 __pycache__/
 core/test/
-/tests
+
+.pytest_cache/
+.ruff_cache/

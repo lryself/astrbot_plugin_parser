@@ -1,16 +1,25 @@
-from asyncio import Task, TimeoutError, create_task, gather, sleep, to_thread
+from asyncio import (
+    CancelledError,
+    Task,
+    TimeoutError,
+    create_task,
+    gather,
+    shield,
+    sleep,
+    to_thread,
+)
 from collections.abc import Callable, Coroutine
 from functools import wraps
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
+from uuid import uuid4
 
 import aiofiles
 import yt_dlp
 from aiohttp import ClientError, ClientSession, ClientTimeout
+from astrbot.api import logger
 from msgspec import Struct, convert
 from tqdm.asyncio import tqdm
-
-from astrbot.api import logger
 
 from .config import PluginConfig
 from .constants import COMMON_HEADER
@@ -32,9 +41,18 @@ def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]
 
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> Task[T]:
-        coro = func(*args, **kwargs)
+        async def run():
+            async with args[0].cfg.cache_lifecycle.use():
+                operation = create_task(func(*args, **kwargs))
+                try:
+                    return await shield(operation)
+                except CancelledError:
+                    # Blocking download workers must finish before releasing the cache lease.
+                    await operation
+                    raise
+
         name = " | ".join(str(arg) for arg in args if isinstance(arg, str))
-        return create_task(coro, name=func.__name__ + " | " + name)
+        return create_task(run(), name=func.__name__ + " | " + name)
 
     return wrapper
 
@@ -99,6 +117,7 @@ class Downloader:
         headers = headers or self.default_headers
         retries = self.cfg.download_retry_times
         for attempt in range(retries + 1):
+            temporary = file_path.with_name(f".{file_path.name}.{uuid4().hex}.part")
             try:
                 async with self.client.get(
                     url, headers=headers, allow_redirects=True, proxy=proxy
@@ -119,7 +138,7 @@ class Downloader:
 
                     downloaded = 0
                     with self.get_progress_bar(file_name, content_length) as bar:
-                        async with aiofiles.open(file_path, "wb") as file:
+                        async with aiofiles.open(temporary, "wb") as file:
                             async for chunk in response.content.iter_chunked(
                                 1024 * 1024
                             ):
@@ -137,17 +156,18 @@ class Downloader:
                             f"HTTP payload incomplete {downloaded}/{content_length}"
                         )
 
+                await to_thread(temporary.replace, file_path)
                 return file_path
             except (ZeroSizeException, SizeLimitException):
-                await safe_unlink(file_path)
                 raise
             except (ClientError, TimeoutError) as exc:
-                await safe_unlink(file_path)
                 if attempt < retries:
                     await sleep(1 + attempt)
                     continue
                 logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")
                 raise DownloadException("媒体下载失败") from exc
+            finally:
+                await safe_unlink(temporary)
         raise DownloadException("媒体下载失败")
 
     @staticmethod

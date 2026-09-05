@@ -15,6 +15,8 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_path,
 )
 
+from .cache_lifecycle import CacheLifecycle
+
 
 class ConfigNode:
     """
@@ -229,6 +231,9 @@ class PluginConfig(ConfigNode):
     proxy: str | None
 
     clean_cron: str
+    archive_directory: str
+    archive_users: list[str]
+    archive_groups: list[str]
 
     parsers_template: list[dict[str, Any]]
 
@@ -237,6 +242,7 @@ class PluginConfig(ConfigNode):
     def __init__(self, config: AstrBotConfig, context: Context):
         super().__init__(config)
         self.context = context
+        self.cache_lifecycle = CacheLifecycle()
         self.admins_id = self.context.get_config().get("admins_id", [])
 
         # ---------- 内置配置 ----------

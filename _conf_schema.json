@@ -713,5 +713,23 @@
                 }
             }
         }
+    },
+    "archive_directory": {
+        "description": "视频永久归档目录",
+        "hint": "留空关闭。填写容器内的绝对路径，与缓存目录分开；白名单用户私聊分享默认归档，指定群内需明确发归档指令。",
+        "type": "string",
+        "default": ""
+    },
+    "archive_groups": {
+        "description": "允许视频归档的群会话",
+        "hint": "填写完整 unified_msg_origin；白名单用户在这些群中可用归档或保存到NAS指令。支持回复卡片后说归档。",
+        "type": "list",
+        "default": []
+    },
+    "archive_users": {
+        "description": "允许触发视频归档的发送者",
+        "hint": "填写 平台名:用户ID，例如 aiocqhttp:123456789。留空不允许任何人归档，不授予 AstrBot 管理权限。",
+        "type": "list",
+        "default": []
     }
 }

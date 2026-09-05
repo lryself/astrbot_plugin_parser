@@ -1,3 +1,5 @@
+> **NAS 归档 fork**：白名单用户私聊分享默认归档，指定群内明确发送“归档”指令才保存。配置、部署和上游更新流程见 [NAS 归档说明](docs/nas-archive.md)。上游项目：[Zhalslar/astrbot_plugin_parser](https://github.com/Zhalslar/astrbot_plugin_parser)。
+
 
 <div align="center">
 
