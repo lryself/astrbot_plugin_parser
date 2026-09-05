@@ -52,7 +52,7 @@ async def check():
         cfg.archive_users = ["aiocqhttp:owner"]
         cfg.archive_groups = []
         cfg.cache_lifecycle = lifecycle
-        cfg.whitelist = []
+        cfg.whitelist = ["default:GroupMessage:allowed"]
         cfg.blacklist = []
         cfg.require_at_in_group = False
         cfg.enable_reply_parse = True

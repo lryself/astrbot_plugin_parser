@@ -121,8 +121,22 @@ class ParserPlugin(Star):
         """消息的统一入口"""
         umo = event.unified_msg_origin
 
+        archive_requested = self.archiver.accepts(
+            sender=f"{event.get_platform_name()}:{event.get_sender_id()}",
+            users=self.cfg.archive_users,
+            private=event.is_private_chat(),
+            origin=umo,
+            groups=self.cfg.archive_groups,
+            text=event.message_str,
+        )
+
         # 白名单
-        if self.cfg.whitelist and umo not in self.cfg.whitelist:
+        # Explicitly enabled private archives are independent of the group parser whitelist.
+        if (
+            self.cfg.whitelist
+            and umo not in self.cfg.whitelist
+            and not (event.is_private_chat() and archive_requested)
+        ):
             return
 
         # 黑名单
@@ -217,14 +231,6 @@ class ParserPlugin(Star):
                 return
             logger.debug("Bot在仲裁中胜出, 准备解析...")
 
-        archive_requested = self.archiver.accepts(
-            sender=f"{event.get_platform_name()}:{event.get_sender_id()}",
-            users=self.cfg.archive_users,
-            private=event.is_private_chat(),
-            origin=umo,
-            groups=self.cfg.archive_groups,
-            text=event.message_str,
-        )
         # 基于link防抖
         link = searched.group(0)
         if not archive_requested and self.debouncer.hit_link(umo, link):
