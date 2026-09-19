@@ -6,6 +6,7 @@ from ...media_policy import download_tier
 
 from bilibili_api import request_settings, select_client
 from bilibili_api.opus import Opus
+from bilibili_api.bangumi import Bangumi, Episode
 from bilibili_api.video import Video, VideoCodecs, VideoQuality
 from msgspec import convert
 
@@ -13,7 +14,7 @@ from astrbot.api import logger
 
 from ...config import PluginConfig
 from ...data import ImageContent, MediaContent, Platform, SendGroup
-from ...exception import DownloadException, DurationLimitException
+from ...exception import DownloadException, DurationLimitException, TipException
 from ..base import (
     BaseParser,
     Downloader,
@@ -68,6 +69,8 @@ class BilibiliParser(BaseParser):
             url = await self.get_final_url(f"https://{searched.group(0)}")
             keyword, searched = self.search_url(url)
         groups = searched.groupdict()
+        if groups.get("epid"):
+            return keyword, searched, f"bilibili:ep{int(groups['epid'])}"
         if keyword in ("BV", "/BV", "av", "/av"):
             bvid = groups.get("bvid") or Video(aid=int(groups["avid"])).get_bvid()
             key = f"bilibili:{bvid}"
@@ -120,6 +123,72 @@ class BilibiliParser(BaseParser):
         page_num = self.page_number(searched)
 
         return await self.parse_video(avid=avid, page_num=page_num)
+
+    @handle(
+        "/bangumi/play/ep", r"bilibili\.com/bangumi/play/ep(?P<epid>[1-9]\d*)(?!\d)"
+    )
+    @handle("ep", r"^ep(?P<epid>[1-9]\d*)$")
+    async def _parse_episode(self, searched: Match[str]):
+        epid = int(searched.group("epid"))
+        credential = await self.login.credential
+        episode = Episode(epid=epid, credential=credential)
+        payload = await episode.get_download_url()
+        data = payload.get("video_info") or {}
+        if data.get("is_drm"):
+            raise TipException(
+                "这部影视内容使用 DRM 保护，当前插件不能下载。请使用 B 站客户端观看或官方缓存功能。"
+            )
+        if data.get("is_preview"):
+            raise TipException(
+                "B 站当前仅返回试看内容，未归档为完整影片。请先在 B 站确认当前账号已获得该剧集观看权限。"
+            )
+        if data.get("code", 0) or not (data.get("dash") or data.get("durl")):
+            raise TipException(
+                "B 站未提供该剧集的可下载视频流，请在 B 站检查账号权限、地区或影片状态。"
+            )
+        if len(data.get("durl") or []) > 1:
+            raise TipException(
+                "该剧集使用暂不支持的分段格式，未下载或归档不完整的视频。"
+            )
+        overview = await Bangumi(epid=epid, credential=credential).get_overview()
+        info = payload.get("play_view_business_info", {}).get("episode_info", {})
+        episode_title = info.get("long_title") or info.get("title") or f"ep{epid}"
+        duration = data.get("timelength", 0) / 1000
+
+        async def download_episode():
+            async with self.cfg.cache_lifecycle.use(), self.download_slots:
+                if duration > self.cfg.max_duration:
+                    raise DurationLimitException
+                return await self.download_playurl(data, f"ep{epid}.mp4")
+
+        return self.result(
+            title=f"{overview['title']} - {episode_title}",
+            url=f"https://www.bilibili.com/bangumi/play/ep{epid}",
+            contents=[
+                self.create_video_content(
+                    asyncio.create_task(download_episode()),
+                    overview.get("cover"),
+                    duration,
+                )
+            ],
+        )
+
+    async def download_playurl(self, data: dict, filename: str):
+        output = self.cfg.cache_dir / filename
+        if output.exists():
+            return await self.downloader.checked_path(output)
+        video_url, audio_url = self.select_download_urls(data)
+        if audio_url:
+            return await self.downloader.download_av_and_merge(
+                video_url,
+                audio_url,
+                output_path=output,
+                headers=self.headers,
+                proxy=self.proxy,
+            )
+        return await self.downloader.streamd(
+            video_url, file_name=filename, headers=self.headers, proxy=self.proxy
+        )
 
     @handle("/dynamic/", r"bilibili\.com/dynamic/(?P<dynamic_id>\d+)")
     @handle("t.bili", r"t\.bilibili\.com/(?P<dynamic_id>\d+)")
@@ -452,6 +521,14 @@ class BilibiliParser(BaseParser):
             page_index (int): 页索引 = 页码 - 1
         """
 
+        if video is None:
+            video = await self._get_video(bvid=bvid, avid=avid)
+
+        # 获取下载数据
+        download_url_data = await video.get_download_url(page_index=page_index)
+        return self.select_download_urls(download_url_data)
+
+    def select_download_urls(self, download_url_data: dict) -> tuple[str, str | None]:
         from bilibili_api.video import (
             AudioStreamDownloadURL,
             MP4StreamDownloadURL,
@@ -459,11 +536,6 @@ class BilibiliParser(BaseParser):
             VideoStreamDownloadURL,
         )
 
-        if video is None:
-            video = await self._get_video(bvid=bvid, avid=avid)
-
-        # 获取下载数据
-        download_url_data = await video.get_download_url(page_index=page_index)
         # Normalize hvc1 streams so bilibili-api can recognize them as HEV.
         for video_data in download_url_data.get("dash", {}).get("video", []):
             codecs = video_data.get("codecs", "")

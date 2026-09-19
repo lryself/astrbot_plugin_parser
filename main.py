@@ -22,6 +22,7 @@ from .core.cache_lifecycle import finish_io
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
+from .core.exception import ParseException
 from .core.media_policy import media_tier
 from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
@@ -118,7 +119,14 @@ class ParserPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        """消息的统一入口"""
+        """Handle expected parser failures without exposing framework tracebacks."""
+        try:
+            await self._process_message(event)
+        except ParseException as exc:
+            await event.send(event.plain_result(f"视频处理未完成：{exc.message[:300]}"))
+
+    async def _process_message(self, event: AstrMessageEvent):
+
         umo = event.unified_msg_origin
 
         archive_requested = self.archiver.accepts(

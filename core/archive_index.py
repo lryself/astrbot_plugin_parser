@@ -111,6 +111,10 @@ class ArchiveIndex:
                 targets.extend(
                     (p, self.cache) for p in self.cache.rglob(f"{match[1]}-*.mp4")
                 )
+            if match := re.fullmatch(r"bilibili:ep([1-9]\d*)", source):
+                targets.extend(
+                    (p, self.cache) for p in self.cache.rglob(f"ep{match[1]}.mp4")
+                )
             for path, root in targets:
                 if not path.resolve().is_relative_to(root):
                     raise ValueError(
