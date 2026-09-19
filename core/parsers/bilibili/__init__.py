@@ -1,7 +1,7 @@
 import asyncio
 from re import Match
 from typing import ClassVar
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from ...media_policy import download_tier
 
 from bilibili_api import request_settings, select_client
@@ -13,6 +13,7 @@ from msgspec import convert
 from astrbot.api import logger
 
 from ...config import PluginConfig
+from ...download import DownloadSource
 from ...data import ImageContent, MediaContent, Platform, SendGroup
 from ...exception import DownloadException, DurationLimitException, TipException
 from ..base import (
@@ -105,11 +106,15 @@ class BilibiliParser(BaseParser):
         _, a_url = await self.extract_download_urls(bvid=bvid, page_index=page - 1)
         if not a_url:
             raise ParseException("未找到音频链接")
-        audio = self.create_audio_content(a_url)
+        audio = self.create_audio_content(
+            self.downloader.download_audio(
+                a_url, headers=self.headers, proxy=self.proxy
+            )
+        )
         return self.result(
             title=f"BiliBili_audio_{bvid}",
             contents=[audio],
-            url=a_url,
+            url=f"https://www.bilibili.com/video/{bvid}?p={page}",
         )
 
     @handle("av", r"^av(?P<avid>\d{6,})(?:\s)?(?P<page_num>\d{1,3})?$")
@@ -177,7 +182,7 @@ class BilibiliParser(BaseParser):
         output = self.cfg.cache_dir / filename
         if output.exists():
             return await self.downloader.checked_path(output)
-        video_url, audio_url = self.select_download_urls(data)
+        video_url, audio_url = self.select_download_urls(data, cache_prefix=output.stem)
         if audio_url:
             return await self.downloader.download_av_and_merge(
                 video_url,
@@ -512,7 +517,7 @@ class BilibiliParser(BaseParser):
         bvid: str | None = None,
         avid: int | None = None,
         page_index: int = 0,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[DownloadSource, DownloadSource | None]:
         """解析视频下载链接
 
         Args:
@@ -526,9 +531,13 @@ class BilibiliParser(BaseParser):
 
         # 获取下载数据
         download_url_data = await video.get_download_url(page_index=page_index)
-        return self.select_download_urls(download_url_data)
+        return self.select_download_urls(
+            download_url_data, cache_prefix=video.get_bvid()
+        )
 
-    def select_download_urls(self, download_url_data: dict) -> tuple[str, str | None]:
+    def select_download_urls(
+        self, download_url_data: dict, *, cache_prefix: str = ""
+    ) -> tuple[DownloadSource, DownloadSource | None]:
         from bilibili_api.video import (
             AudioStreamDownloadURL,
             MP4StreamDownloadURL,
@@ -556,9 +565,19 @@ class BilibiliParser(BaseParser):
         )
         if not streams:
             raise DownloadException("未找到可下载的视频流（可能是所选编码无对应流）")
+
+        def source(stream):
+            # SDK backups belong to this exact selected quality/codec, not another rendition.
+            urls = tuple(
+                dict.fromkeys(
+                    [stream.url, *(getattr(stream, "backup_url", None) or [])]
+                )
+            )
+            return DownloadSource(urls, urlsplit(stream.url).path, cache_prefix)
+
         video_stream = streams[0]
         if isinstance(video_stream, MP4StreamDownloadURL):
-            return video_stream.url, None
+            return source(video_stream), None
         if not isinstance(video_stream, VideoStreamDownloadURL):
             raise DownloadException("未找到可下载的视频流")
         logger.debug(
@@ -567,6 +586,6 @@ class BilibiliParser(BaseParser):
 
         audio_stream = streams[1] if len(streams) > 1 else None
         if not isinstance(audio_stream, AudioStreamDownloadURL):
-            return video_stream.url, None
+            return source(video_stream), None
         logger.debug(f"音频流质量: {audio_stream.audio_quality.name}")
-        return video_stream.url, audio_stream.url
+        return source(video_stream), source(audio_stream)

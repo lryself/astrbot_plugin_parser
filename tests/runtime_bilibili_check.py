@@ -79,6 +79,7 @@ async def check():
                 2
             ] == "bilibili:BV17x411w7KC"
             api = SimpleNamespace(
+                get_bvid=lambda: "BV17x411w7KC",
                 get_download_url=AsyncMock(
                     return_value={
                         "dash": {
@@ -89,14 +90,22 @@ async def check():
                             "audio": [],
                         }
                     }
-                )
+                ),
             )
             with policy.media_tier("preview"):
-                assert (await parser.extract_download_urls(api))[0].endswith("/1080")
+                assert (
+                    (await parser.extract_download_urls(api))[0]
+                    .urls[0]
+                    .endswith("/1080")
+                )
                 assert "height<=1080" in downloader.video_format
                 assert cfg.max_size == 300 * 1024 * 1024
             with policy.media_tier("archive"):
-                assert (await parser.extract_download_urls(api))[0].endswith("/2160")
+                assert (
+                    (await parser.extract_download_urls(api))[0]
+                    .urls[0]
+                    .endswith("/2160")
+                )
                 assert downloader.video_format == "bv*+ba/b" and cfg.max_size == float(
                     "inf"
                 )

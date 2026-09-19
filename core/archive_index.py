@@ -109,11 +109,13 @@ class ArchiveIndex:
             # Bilibili's completed cache names are canonical even before the first receipt.
             if match := re.fullmatch(r"bilibili:(BV[0-9A-Za-z]{10})", source):
                 targets.extend(
-                    (p, self.cache) for p in self.cache.rglob(f"{match[1]}-*.mp4")
+                    (p, self.cache) for p in self.cache.rglob(f"{match[1]}-*")
                 )
             if match := re.fullmatch(r"bilibili:ep([1-9]\d*)", source):
                 targets.extend(
-                    (p, self.cache) for p in self.cache.rglob(f"ep{match[1]}.mp4")
+                    (p, self.cache)
+                    for pattern in (f"ep{match[1]}.mp4", f"ep{match[1]}--*")
+                    for p in self.cache.rglob(pattern)
                 )
             for path, root in targets:
                 if not path.resolve().is_relative_to(root):

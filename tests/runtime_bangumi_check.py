@@ -60,7 +60,7 @@ async def check():
         assert identity == "bilibili:ep6084344"
         selected = []
 
-        def select(data):
+        def select(data, **kwargs):
             selected.append(data)
             return "https://media.example/authorized-stream", None
 

@@ -10,6 +10,8 @@ from asyncio import (
 )
 from collections.abc import Callable, Coroutine
 from functools import wraps
+from dataclasses import dataclass
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 from uuid import uuid4
@@ -51,10 +53,32 @@ def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]
                     await operation
                     raise
 
-        name = " | ".join(str(arg) for arg in args if isinstance(arg, str))
+        name = " | ".join(
+            urlsplit(arg)._replace(query="", fragment="").geturl()
+            if arg.startswith(("http://", "https://"))
+            else arg
+            for arg in args
+            if isinstance(arg, str)
+        )
         return create_task(run(), name=func.__name__ + " | " + name)
 
     return wrapper
+
+
+@dataclass(frozen=True)
+class DownloadSource:
+    """Equivalent CDN URLs for one media stream, with a stable cache identity."""
+
+    urls: tuple[str, ...]
+    cache_key: str
+    cache_prefix: str = ""
+
+
+def media_filename(source: str | DownloadSource, suffix: str = "") -> str:
+    if isinstance(source, DownloadSource):
+        name = generate_file_name(source.cache_key, suffix)
+        return f"{source.cache_prefix}--{name}" if source.cache_prefix else name
+    return generate_file_name(source, suffix)
 
 
 class VideoInfo(Struct):
@@ -111,26 +135,29 @@ class Downloader:
     @auto_task
     async def streamd(
         self,
-        url: str,
+        url: str | DownloadSource,
         *,
         file_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
     ) -> Path:
         """流式下载"""
+        sources = url.urls if isinstance(url, DownloadSource) else (url,)
         if not file_name:
-            file_name = generate_file_name(url)
+            file_name = media_filename(url)
         file_path = self.cfg.cache_dir / file_name
         # 如果文件存在，则直接返回
         if file_path.exists():
             return await self.checked_path(file_path)
         headers = headers or self.default_headers
         retries = self.cfg.download_retry_times
-        for attempt in range(retries + 1):
+        attempts = max(retries + 1, len(sources))
+        for attempt in range(attempts):
+            current_url = sources[attempt % len(sources)]
             temporary = file_path.with_name(f".{file_path.name}.{uuid4().hex}.part")
             try:
                 async with self.client.get(
-                    url, headers=headers, allow_redirects=True, proxy=proxy
+                    current_url, headers=headers, allow_redirects=True, proxy=proxy
                 ) as response:
                     if response.status >= 400:
                         raise ClientError(f"HTTP {response.status} {response.reason}")
@@ -138,11 +165,11 @@ class Downloader:
                     max_bytes = self.cfg.max_size
 
                     if content_length == 0:
-                        logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
+                        logger.warning(f"媒体 {file_path.name} 大小为 0, 取消下载")
                         raise ZeroSizeException
                     if content_length and content_length > max_bytes:
                         logger.warning(
-                            f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {max_bytes / 1024 / 1024} MB, 取消下载"
+                            f"媒体 {file_path.name} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {max_bytes / 1024 / 1024} MB, 取消下载"
                         )
                         raise SizeLimitException
 
@@ -159,7 +186,7 @@ class Downloader:
                                 bar.update(len(chunk))
 
                     if downloaded == 0:
-                        logger.warning(f"媒体 url: {url}, 实际大小为 0, 取消下载")
+                        logger.warning(f"媒体 {file_path.name} 实际大小为 0, 取消下载")
                         raise ZeroSizeException
                     if content_length and downloaded < content_length:
                         raise ClientError(
@@ -171,11 +198,16 @@ class Downloader:
             except (ZeroSizeException, SizeLimitException):
                 raise
             except (ClientError, TimeoutError) as exc:
-                if attempt < retries:
-                    await sleep(1 + attempt)
+                logger.warning(
+                    f"Media node failed: host={urlsplit(current_url).hostname}, error={type(exc).__name__}, attempt={attempt + 1}/{attempts}"
+                )
+                if attempt + 1 < attempts:
+                    if len(sources) == 1:
+                        await sleep(1 + attempt)
                     continue
-                logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")
-                raise DownloadException("媒体下载失败") from exc
+                raise DownloadException(
+                    f"媒体下载节点均失败（{type(exc).__name__}），请稍后重试"
+                ) from None
             finally:
                 await safe_unlink(temporary)
         raise DownloadException("媒体下载失败")
@@ -204,14 +236,14 @@ class Downloader:
     @auto_task
     async def download_video(
         self,
-        url: str,
+        url: str | DownloadSource,
         *,
         video_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
     ) -> Path:
         if video_name is None:
-            video_name = generate_file_name(url, ".mp4")
+            video_name = media_filename(url, ".mp4")
         return await self.streamd(
             url, file_name=video_name, headers=headers, proxy=proxy
         )
@@ -219,14 +251,14 @@ class Downloader:
     @auto_task
     async def download_audio(
         self,
-        url: str,
+        url: str | DownloadSource,
         *,
         audio_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
     ) -> Path:
         if audio_name is None:
-            audio_name = generate_file_name(url, ".mp3")
+            audio_name = media_filename(url, ".mp3")
         return await self.streamd(
             url, file_name=audio_name, headers=headers, proxy=proxy
         )
@@ -275,8 +307,8 @@ class Downloader:
     @auto_task
     async def download_av_and_merge(
         self,
-        v_url: str,
-        a_url: str,
+        v_url: str | DownloadSource,
+        a_url: str | DownloadSource,
         *,
         output_path: Path,
         headers: dict[str, str] | None = None,

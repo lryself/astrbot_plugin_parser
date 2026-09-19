@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .data import ParseResult, VideoContent
+from .exception import DownloadException
 from .archive_index import ArchiveIndex
 from .cache_lifecycle import finish_io
 
@@ -196,6 +197,9 @@ class VideoArchiver:
                         report.saved += 1
                     else:
                         report.existing += 1
+                except DownloadException as exc:
+                    report.failed += 1
+                    logger.warning(f"Video archive failed for {identity}: {exc}")
                 except Exception:
                     report.failed += 1
                     logger.exception("Video archive failed for %s", identity)
