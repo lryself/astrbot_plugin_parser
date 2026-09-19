@@ -19,6 +19,7 @@ CacheLifecycle = importlib.import_module(
 
 async def check():
     calls = []
+    release = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -26,6 +27,14 @@ async def check():
             if self.path.startswith("/bad"):
                 self.send_response(503)
                 self.end_headers()
+                return
+            if self.path.startswith("/stall"):
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                release.wait(4)
                 return
             data = b"complete alternate media"
             self.send_response(200)
@@ -43,7 +52,7 @@ async def check():
             cache_dir=Path(temp),
             cache_lifecycle=CacheLifecycle(),
             max_size=1024,
-            download_timeout=2,
+            download_timeout=0.2,
             download_retry_times=0,
         )
         d = module.Downloader(cfg)
@@ -60,11 +69,19 @@ async def check():
                 (url + "/good?signature=renewed",), "/cid/audio.m4s"
             )
             assert await d.download_audio(changed) == result and len(calls) == 2
+            stalled = module.DownloadSource(
+                (url + "/stall", url + "/good"), "/cid/other.m4s"
+            )
+            assert (
+                await d.download_audio(stalled)
+            ).read_bytes() == b"complete alternate media"
+            assert calls[-2:] == ["/stall", "/good"]
             assert not list(Path(temp).glob("*.part"))
             print(
                 "PASS: unavailable primary uses SDK backup, refreshed signatures reuse completed stream"
             )
         finally:
+            release.set()
             await d.close()
             server.shutdown()
 

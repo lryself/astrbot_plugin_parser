@@ -61,8 +61,9 @@ def test_force_episode_clears_both_cache_tiers_without_a_receipt(tmp_path):
     for tier in ("preview", "archive"):
         (cache / tier).mkdir(parents=True)
         (cache / tier / "ep42.mp4").write_bytes(b"stale")
+        (cache / tier / "ep42--audio.m4s").write_bytes(b"stale track")
         (cache / tier / "ep43.mp4").write_bytes(b"keep")
     index = ArchiveIndex(tmp_path / "index.sqlite", archive, cache)
     index.remove("bilibili:ep42")
-    assert not list(cache.rglob("ep42.mp4"))
+    assert not list(cache.rglob("ep42*"))
     assert len(list(cache.rglob("ep43.mp4"))) == 2
