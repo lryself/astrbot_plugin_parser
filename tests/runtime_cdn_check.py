@@ -49,6 +49,9 @@ async def check():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory() as temp:
         cfg = SimpleNamespace(
+            segment_threshold_mb=0,
+            segment_size_mb=100,
+            segment_concurrency=4,
             cache_dir=Path(temp),
             cache_lifecycle=CacheLifecycle(),
             max_size=1024,

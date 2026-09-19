@@ -24,6 +24,9 @@ from msgspec import Struct, convert
 from tqdm.asyncio import tqdm
 
 from .config import PluginConfig
+from .segmented import SegmentedDownloader
+from .cache_lifecycle import finish_io
+import shutil
 from .constants import COMMON_HEADER
 from .exception import (
     DownloadException,
@@ -116,6 +119,12 @@ class Downloader:
         self.client = ClientSession(
             timeout=ClientTimeout(total=self.cfg.download_timeout)
         )
+        self.segmented = SegmentedDownloader(
+            self.client,
+            config.segment_threshold_mb * 1024 * 1024,
+            config.segment_size_mb * 1024 * 1024,
+            config.segment_concurrency,
+        )
 
     @property
     def video_format(self) -> str:
@@ -151,6 +160,22 @@ class Downloader:
             return await self.checked_path(file_path)
         headers = headers or self.default_headers
         retries = self.cfg.download_retry_times
+        if file_path.suffix.lower() in {".mp4", ".m4s", ".webm", ".mkv", ".flv"}:
+            try:
+                if await self.segmented.download(
+                    sources,
+                    file_path,
+                    headers=headers,
+                    proxy=proxy,
+                    timeout=self.cfg.download_timeout,
+                    retries=retries,
+                    max_bytes=self.cfg.max_size,
+                ):
+                    return file_path
+            except (ClientError, TimeoutError) as exc:
+                raise DownloadException(
+                    f"分片下载暂未完成（{type(exc).__name__}），已保留完成分片，请重试"
+                ) from None
         attempts = max(retries + 1, len(sources))
         for attempt in range(attempts):
             current_url = sources[attempt % len(sources)]
@@ -194,6 +219,9 @@ class Downloader:
                         )
 
                 await to_thread(temporary.replace, file_path)
+                parts = file_path.with_name(f".{file_path.name}.segments")
+                if parts.exists():
+                    await finish_io(shutil.rmtree, parts)
                 return file_path
             except (ZeroSizeException, SizeLimitException):
                 raise

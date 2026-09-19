@@ -109,12 +109,19 @@ class ArchiveIndex:
             # Bilibili's completed cache names are canonical even before the first receipt.
             if match := re.fullmatch(r"bilibili:(BV[0-9A-Za-z]{10})", source):
                 targets.extend(
-                    (p, self.cache) for p in self.cache.rglob(f"{match[1]}-*")
+                    (p, self.cache)
+                    for pattern in (f"{match[1]}-*", f".{match[1]}-*.segments")
+                    for p in self.cache.rglob(pattern)
                 )
             if match := re.fullmatch(r"bilibili:ep([1-9]\d*)", source):
                 targets.extend(
                     (p, self.cache)
-                    for pattern in (f"ep{match[1]}.mp4", f"ep{match[1]}--*")
+                    for pattern in (
+                        f"ep{match[1]}.mp4",
+                        f"ep{match[1]}--*",
+                        f".ep{match[1]}.mp4.segments",
+                        f".ep{match[1]}--*.segments",
+                    )
                     for p in self.cache.rglob(pattern)
                 )
             for path, root in targets:
@@ -123,7 +130,10 @@ class ArchiveIndex:
                         "Archive receipt points outside its configured directory"
                     )
             for path, _ in targets:
-                path.unlink(missing_ok=True)
+                if path.is_dir() and path.name.endswith(".segments"):
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
             for parent in {
                 p.parent
                 for p, root in targets

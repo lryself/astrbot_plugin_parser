@@ -34,6 +34,10 @@ async def check():
             str(old), schema=json.loads((PACKAGE / "_conf_schema.json").read_text())
         )
         assert upgraded["archive_directory"] == "" and upgraded["archive_users"] == []
+        assert (
+            upgraded["segment_threshold_mb"] == 200
+            and upgraded["segment_size_mb"] == 100
+        )
         (root / "cache").mkdir()
         (root / "web").mkdir()
         (root / "web" / "video.mp4").write_bytes(b"complete HTTP media fixture" * 1024)

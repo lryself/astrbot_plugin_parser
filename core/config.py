@@ -225,6 +225,9 @@ class PluginConfig(ConfigNode):
     forward_threshold: int
 
     show_download_fail_tip: bool
+    segment_threshold_mb: int
+    segment_size_mb: int
+    segment_concurrency: int
     download_timeout: int
     download_retry_times: int
     common_timeout: int

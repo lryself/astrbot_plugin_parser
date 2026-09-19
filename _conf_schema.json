@@ -741,5 +741,23 @@
         "hint": "0表示不限制。",
         "type": "int",
         "default": 0
+    },
+    "segment_threshold_mb": {
+        "description": "分片下载启用阈值（MB）",
+        "hint": "文件严格大于此值才分片；0关闭。MB按1024×1024字节计。",
+        "type": "int",
+        "default": 200
+    },
+    "segment_size_mb": {
+        "description": "每个分片大小（MB）",
+        "hint": "最后一片可不足此大小。",
+        "type": "int",
+        "default": 100
+    },
+    "segment_concurrency": {
+        "description": "分片下载全局并发数",
+        "hint": "所有音视频轨共用，范围1至16。",
+        "type": "int",
+        "default": 4
     }
 }

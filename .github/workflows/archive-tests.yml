@@ -8,5 +8,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install pytest pytest-asyncio
-      - run: python -m pytest -q tests/test_archive.py tests/test_archive_index.py
+      - run: python -m pip install pytest pytest-asyncio aiohttp aiofiles
+      - run: python -m pytest -q tests/test_archive.py tests/test_archive_index.py tests/test_segmented.py
